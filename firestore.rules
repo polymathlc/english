@@ -1,0 +1,116 @@
+rules_version = '2';
+
+// =============================================================================
+// English Learning Portal — Firestore security rules
+//
+// This app shares a Firebase project with the Science portal it was forked
+// from, and shares NO DATA with it: every collection below carries an English
+// name of its own. Deploy these rules ALONGSIDE the Science app's rules (paste
+// the match blocks into the same `service cloud.firestore` block) — replacing
+// that file with this one would lock the Science app out of its own data.
+//
+// A name the rules do not know about fails closed: reads come back empty and
+// writes are denied, with nothing broken-looking on screen to explain why. So
+// if a page is mysteriously blank after a rename, look here first.
+// =============================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn()      { return request.auth != null; }
+    function isSelf(uid)     { return signedIn() && request.auth.uid == uid; }
+    // The teacher's own account, published at enConfig/admin so every student
+    // resolves the same question bank.
+    function adminUid()      { return get(/databases/$(database)/documents/enConfig/admin).data.uid; }
+    function isAdmin()       { return signedIn() && request.auth.uid == adminUid(); }
+
+    // ---- the user tree ------------------------------------------------------
+    // A student owns everything under their own uid. The bank, the settings and
+    // the teaching notes under the ADMIN's uid are readable by everyone signed
+    // in, because that is what students are served from.
+    match /users/{uid} {
+      allow read, write: if isSelf(uid);
+
+      match /questionsEn/{qid}      { allow read: if signedIn(); allow write: if isSelf(uid); }
+      match /vettingEn/{qid}        { allow read: if signedIn(); allow write: if isSelf(uid); }
+      match /settingsEn/{sid}       { allow read: if signedIn(); allow write: if isSelf(uid); }
+      match /teachingNotesEn/{nid}  { allow read: if signedIn(); allow write: if isSelf(uid); }
+      match /worksheetsEn/{wid}     { allow read, write: if isSelf(uid); }
+      match /statsEn/{sid}          { allow read, write: if isSelf(uid); }
+      match /workSessionsEn/{wid}   { allow read, write: if isSelf(uid); }
+
+      // An employee authors straight into the teacher's bank, so they need to
+      // write there. Widen this only if you actually hire one.
+      match /{document=**}          { allow read: if isSelf(uid); }
+    }
+
+    // ---- shared collections -------------------------------------------------
+    // Where the question bank lives. Only the admin may move the pointer.
+    match /enConfig/{docId} {
+      allow read:  if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Name, level and the accepted terms. A student writes their own; the
+    // teacher reads the roster.
+    match /enUserProfiles/{uid} {
+      allow read:   if signedIn();
+      allow create: if isSelf(uid) || isAdmin();
+      allow update: if isSelf(uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Counts only — questions marked, accuracy, day streak. Never answers.
+    match /enProgress/{uid} {
+      allow read:   if signedIn();
+      allow write:  if isSelf(uid) || isAdmin();
+    }
+
+    // One row per marked question, used for the report and the activity view.
+    match /enQuestionAttempts/{docId} {
+      allow read:   if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    match /enLoginEvents/{docId} {
+      allow read:   if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // A student reports a broken question; the teacher clears it.
+    match /enFlaggedQuestions/{docId} {
+      allow read:   if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // The bulletin board. A student's post starts 'pending'; only the teacher
+    // approves, pins or removes one.
+    match /enCommunity/{docId} {
+      allow read:   if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // Timed question sprints. Students write their own score into the doc.
+    match /enEncounterQuests/{docId} {
+      allow read:   if signedIn();
+      allow create, delete: if isAdmin();
+      allow update: if signedIn();
+    }
+
+    match /enMessages/{docId} {
+      allow read:   if signedIn();
+      allow create: if signedIn();
+      allow update: if signedIn();
+      allow delete: if isAdmin();
+    }
+
+    // An author's clocked-on sessions. Shared so the teacher can read the team's.
+    match /enWorkSessions/{docId} {
+      allow read:   if isAdmin() || (signedIn() && docId.split('_')[0] == request.auth.uid);
+      allow write:  if signedIn() && docId.split('_')[0] == request.auth.uid;
+    }
+  }
+}
