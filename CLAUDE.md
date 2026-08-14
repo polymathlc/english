@@ -273,9 +273,28 @@ The student drags a word into a blank and it is struck off.
   a flag kept beside them is one drag away from disagreeing with the passage.
   The tapped-and-waiting word lives on the element, not in a map keyed by block
   id — the same block can be on screen in two surfaces at once.
+- **Every blank is also a DROP-DOWN** (`.cb-pick`, v1.13.0), because on a passage
+  of any length the bank has scrolled off the top long before blank (33) — and a
+  word you cannot see is a word you cannot drag. **`_cbOptionsHtml` is the ONE
+  place a blank's list is worked out**: the letter already in this blank, plus
+  every letter not sitting in another one. A blank must always keep its OWN word,
+  or the `<select>` falls back to the first option and the student's answer
+  changes by itself.
+- **The drop-down list and the struck-off bank are BOTH renders of the same
+  placements**, rebuilt together by `_cbSyncBank` — which every path that moves a
+  word already calls, so nothing needed a second set of call sites. A list kept
+  beside them is one change away from offering a word the bank has struck off.
+- **A click inside `.cb-pick` is the drop-down's own**: without the guard, the
+  slot's "tap a filled blank to take the word back" handler empties the blank the
+  moment it is opened, and Enter/Space never reach the `<select>` at all.
+- `appearance:auto` on `.cb-pick` is **not optional** — Tailwind's preflight sets
+  it to `none`, which takes the arrow off and leaves something that does not read
+  as a control (the same trap as a bare checkbox).
 - A **used word is still draggable**, and dropping it MOVES it. Refusing the
   drag would make the only way to correct blank 26 a tap to release and a second
-  drag to place.
+  drag to place. The drop-down is the opposite by design — a word in use is not
+  offered elsewhere — so a word is released by setting its blank to "—" or by
+  tapping the struck-off word in the bank.
 - **The bank is read DOWN the columns**, as the paper sets it, and the cells are
   sized from the columns actually filled (`_cbCols`).
 - Both print builders carry an **explicit `case 'clozebank'`** for exactly the

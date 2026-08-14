@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.12.0';
+const APP_VERSION = 'v1.13.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -20931,12 +20931,35 @@ function _cbBankHtml(block, blockId, interactive) {
       <table class="cb-bank-grid"><tbody>${rows}</tbody></table>
     </div>`;
 }
+// Every letter this blank may still be given: the one already in it, plus every
+// letter not sitting in another blank. THE ONE PLACE that list is worked out —
+// the initial render and every refresh after a change both ask it, so a word can
+// never be offered in two dropdowns at once.
+//
+// `once === false` turns the exclusion off, because then the bank is not a set
+// of one-use words and striking them out would be a lie.
+function _cbOptionsHtml(block, mine, used, once) {
+  const { bank } = cbBankMap(block || {});
+  const out = ['<option value="">—</option>'];
+  bank.forEach((w, i) => {
+    const L = CB_LETTERS[i];
+    if (!L) return;
+    if (once && used && used.has(L) && L !== mine) return;
+    out.push(`<option value="${escapeHtml(L)}"${L === mine ? ' selected' : ''}>(${escapeHtml(L)}) ${escapeHtml(w)}</option>`);
+  });
+  return out.join('');
+}
 // One numbered slot. The number sits UNDER the rule, as it does on the paper,
 // so it is positioned rather than flowed — a number on its own line would put
 // a gap through the middle of every sentence that carries a blank.
-function _cbSlotHtml(oidx, num, blockId) {
-  return `<span class="cb-slot" data-cb-slot="${oidx}" data-cb-block="${escapeHtml(blockId)}" data-cb-num="${num}" tabindex="0" role="button"
-      aria-label="Blank ${num}"><span class="cb-slot-fill"></span><span class="cb-slot-num">(${num})</span></span>`;
+//
+// The blank is a DROPDOWN as well as a drop target. On a passage of any length
+// the bank scrolls off the top long before blank (33), and a word you cannot see
+// is a word you cannot drag: the dropdown carries the list to the blank instead.
+// Drag and tap-to-place still work for the blanks near the top.
+function _cbSlotHtml(oidx, num, blockId, block) {
+  return `<span class="cb-slot" data-cb-slot="${oidx}" data-cb-block="${escapeHtml(blockId)}" data-cb-num="${num}"
+      ><select class="cb-pick" aria-label="Blank ${num}">${_cbOptionsHtml(block, '', null, false)}</select><span class="cb-slot-num">(${num})</span></span>`;
 }
 // The student's rendering. Every blank becomes a drop target and every bank
 // word a draggable chip; nothing about the passage's own wording moves.
@@ -20945,8 +20968,8 @@ function cbStudentHtml(block, containerSel, oidxs) {
   const start = _cbStart(block);
   let k = 0;
   const body = parts.map(p => p.type === 'blank'
-    ? _cbSlotHtml(oidxs[k], start + (k++), block.id)
-    : escapeHtml(p.text)).join('');
+    ? _cbSlotHtml(oidxs[k], start + (k++), block.id, block)
+    : _coText(p.text)).join('');
   const intro = cbIntro(block);
   return `<div class="cb-wrap" data-cb-wrap="${escapeHtml(block.id)}">
       ${intro ? `<div class="cb-intro">${escapeHtml(intro)}</div>` : ''}
@@ -20955,7 +20978,7 @@ function cbStudentHtml(block, containerSel, oidxs) {
       <div class="cb-actions">
         <button type="button" class="btn btn-check" data-cb-check="${containerSel}" data-cb-blk="${escapeHtml(block.id)}">✓ Check answers</button>
         <button type="button" class="btn btn-ghost" data-cb-clear="${containerSel}" data-cb-blk="${escapeHtml(block.id)}">↺ Clear all</button>
-        <span class="cb-hint">Drag a word into a blank — or tap the word, then tap the blank. Tap a filled blank to take the word back.</span>
+        <span class="cb-hint">Choose a word from the drop-down in each blank — a word you use is taken out of the other blanks' lists. You can also drag one down from the list above.</span>
       </div>
       <div class="cb-feedback" data-cb-fb="${escapeHtml(block.id)}"></div>
     </div>`;
@@ -20968,9 +20991,29 @@ function _cbUsed(wrap) {
   wrap.querySelectorAll('.cb-slot').forEach(s => { const L = s.dataset.cbLetter; if (L) used.add(L); });
   return used;
 }
-function _cbSyncBank(wrap) {
+// The struck-off bank AND every dropdown's option list are renders of the one
+// placement store (`slot.dataset.cbLetter`), rebuilt together. Keeping either as
+// a second list of its own is one change away from disagreeing with the passage
+// the student can see — a word struck off the bank but still offered in blank
+// (33), or offered in two blanks at once.
+//
+// Every path that moves a word already calls this, so the dropdowns are kept in
+// step by the same one hook rather than by a second set of call sites.
+function _cbSyncBank(wrap, block) {
+  if (!wrap) return;
   const used = _cbUsed(wrap);
   wrap.querySelectorAll('[data-cb-word]').forEach(w => w.classList.toggle('used', used.has(w.dataset.cbWord)));
+  const picks = wrap.querySelectorAll('.cb-pick');
+  if (!picks.length) return;
+  const b = block || _cbBlockOf(_cbSelOf(wrap), wrap.getAttribute('data-cb-wrap'));
+  if (!b) return;
+  const once = b.once !== false;
+  picks.forEach(sel => {
+    const slot = sel.closest('.cb-slot');
+    const mine = (slot && slot.dataset.cbLetter) || '';
+    sel.innerHTML = _cbOptionsHtml(b, mine, used, once);
+    sel.value = mine;
+  });
 }
 function _cbWrapOf(el) { return el && el.closest ? el.closest('[data-cb-wrap]') : null; }
 function _cbBlockOf(containerSel, blockId) {
@@ -20993,7 +21036,7 @@ function _cbPlace(wrap, slot, letter, block) {
   slot.classList.remove('right', 'wrong');
   const fill = slot.querySelector('.cb-slot-fill');
   if (fill) fill.textContent = '(' + letter + ') ' + word;
-  _cbSyncBank(wrap);
+  _cbSyncBank(wrap, block);
 }
 function _cbClearSlot(slot) {
   if (!slot) return;
@@ -21094,7 +21137,23 @@ document.addEventListener('drop', function (e) {
   const block = _cbBlockOf(_cbSelOf(wrap), s.dataset.cbBlock);
   if (block) _cbPlace(wrap, s, raw.slice(7), block);
 });
+// Choosing from a blank's drop-down. It goes through _cbPlace like a drag does,
+// so a word already in another blank is lifted out of it rather than cloned.
+document.addEventListener('change', function (e) {
+  const sel = e.target;
+  if (!sel || !sel.classList || !sel.classList.contains('cb-pick')) return;
+  const slot = sel.closest('.cb-slot'); if (!slot) return;
+  const wrap = _cbWrapOf(slot); if (!wrap) return;
+  const block = _cbBlockOf(_cbSelOf(wrap), slot.dataset.cbBlock);
+  const letter = String(sel.value || '');
+  if (letter && block) _cbPlace(wrap, slot, letter, block);
+  else { _cbClearSlot(slot); _cbSyncBank(wrap, block); }
+});
 document.addEventListener('click', function (e) {
+  // A click that landed ON the drop-down is the drop-down's own — without this
+  // the slot's handler below reads it as "tap a filled blank to take the word
+  // back" and empties the blank the moment it is opened.
+  if (e.target.closest && e.target.closest('.cb-pick')) return;
   const chk = e.target.closest && e.target.closest('[data-cb-check]');
   if (chk) { e.preventDefault(); cbCheck(chk.getAttribute('data-cb-check'), chk.getAttribute('data-cb-blk'), chk); return; }
   const clr = e.target.closest && e.target.closest('[data-cb-clear]');
@@ -21121,7 +21180,7 @@ document.addEventListener('click', function (e) {
     const block = _cbBlockOf(sel, slot.dataset.cbBlock);
     const picked = wrap.dataset.cbPicked || '';
     if (picked && block) { _cbPlace(wrap, slot, picked, block); _cbSetPicked(wrap, ''); }
-    else if (slot.dataset.cbLetter) { _cbClearSlot(slot); _cbSyncBank(wrap); }
+    else if (slot.dataset.cbLetter) { _cbClearSlot(slot); _cbSyncBank(wrap, block); }
     return;
   }
 });
@@ -21129,6 +21188,9 @@ document.addEventListener('keydown', function (e) {
   if (e.key !== 'Enter' && e.key !== ' ') return;
   const t = e.target;
   if (!t || !t.closest) return;
+  // Never inside the drop-down: Enter and Space are how a <select> is opened and
+  // committed, and re-dispatching them as a click empties the blank instead.
+  if (t.closest('.cb-pick')) return;
   if (t.closest('[data-cb-word]') || t.closest('.cb-slot')) { e.preventDefault(); t.click(); }
 });
 // Which surface a passage belongs to. The wrap does not carry the container
@@ -21154,7 +21216,7 @@ function cbPrintHtml(block) {
   let k = 0;
   const body = parts.map(p => p.type === 'blank'
     ? `<span class="print-cb-slot"><span class="print-cb-rule">&nbsp;</span><span class="print-cb-num">(${start + (k++)})</span></span>`
-    : escapeHtml(p.text)).join('');
+    : _coText(p.text)).join('');
   const { bank } = cbBankMap(block);
   const cw = (100 / _cbCols(bank)).toFixed(2);
   const grid = _cbGrid(bank).map(row =>
@@ -21176,7 +21238,7 @@ function _cbEditorPreviewHtml(block) {
   const start = _cbStart(block);
   let k = 0;
   const body = parts.map(p => {
-    if (p.type !== 'blank') return escapeHtml(p.text);
+    if (p.type !== 'blank') return _coText(p.text);
     const L = map.byWord[_cbNorm(p.answer)] || '?';
     const n = start + (k++);
     return `<span class="cb-slot filled static"><span class="cb-slot-fill">(${escapeHtml(L)}) ${escapeHtml(p.answer)}</span><span class="cb-slot-num">(${n})</span></span>`;
