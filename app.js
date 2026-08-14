@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.11.0';
+const APP_VERSION = 'v1.12.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -9079,6 +9079,37 @@ function _aiSuggestedTags(data) {
   return out.slice(0, 6);     // a suggestion, not a keyword-stuffing exercise
 }
 
+// A page can hold SEVERAL questions. This is the ONE place a build reply becomes
+// the list of questions it describes, so every path that reads one — ⚡ Rapid
+// add, 🤖 Build from screenshot — agrees on how many are on the page.
+//
+// The single-question shape is still the default and still what most pages come
+// back as; `questions` is the array form. Each entry INHERITS the top-level
+// title / topic / category / tags it does not carry itself, because a model told
+// to write them per entry reliably writes them once at the top and then stops —
+// and a question landing in vetting with no topic is one an author has to open
+// and fix by hand.
+//
+// An empty or unusable `questions` array falls back to the whole reply rather
+// than returning nothing: a page that produced blocks must produce a question.
+function _aiQuestionPayloads(parsed) {
+  if (!parsed || typeof parsed !== 'object') return [];
+  const list = Array.isArray(parsed.questions) ? parsed.questions : null;
+  if (!list) return [parsed];
+  const kept = list.filter(x => x && typeof x === 'object' && Array.isArray(x.blocks) && x.blocks.length);
+  if (!kept.length) return Array.isArray(parsed.blocks) && parsed.blocks.length ? [parsed] : [];
+  const pick = (a, b) => (a == null || a === '' ? b : a);
+  return kept.map(x => ({
+    title: pick(x.title, parsed.title),
+    topic: pick(x.topic, parsed.topic),
+    category: pick(x.category, parsed.category),
+    tags: (Array.isArray(x.tags) && x.tags.length) ? x.tags : parsed.tags,
+    questionType: pick(x.questionType, parsed.questionType),
+    topicConfidence: pick(x.topicConfidence, parsed.topicConfidence),
+    blocks: x.blocks
+  }));
+}
+
 function buildQuestionFromAi(data) {
   const built = buildBlocksFromAi(data || {});
   return applyMcqCategory({
@@ -9569,10 +9600,17 @@ function _aiBuildQuestionPrompt(isPdf, imageCount) {
     SCAN_READING_NOTE +
     _genPreamble() +
     (multi ? `IMPORTANT: the ${n} attached images are CONSECUTIVE screenshots of ONE AND THE SAME question, already in reading order (image 1 first). Read them as one continuous question — do NOT treat them as separate questions and do NOT drop content from any of the images. Very often this is a PASSAGE on the first image or two and the numbered questions about it on the rest: that is questionType "passage", and every numbered question becomes its own "part". Content from the LAST image matters as much as the first — read to the end.\n` : '') +
-    `FIRST decide the question type: "mcq" if the question gives a set of answer options to choose from (e.g. (1)(2)(3)(4) or A/B/C/D), otherwise "open".\n` +
+    `FIRST decide HOW MANY QUESTIONS this source holds. This decision comes before everything else:\n` +
+    `  • Several NUMBERED questions that do NOT share a passage, picture or instruction line — 61, 62, 63, 64, 65, each standing entirely on its own — are SEPARATE questions. Return ONE entry per number. Never merge them into one question with parts (a), (b), (c): they are unrelated to each other, a student is served one at a time, and each is marked on its own.\n` +
+    `  • A passage, article, poster or infographic followed by numbered questions ABOUT it is ONE question, however many numbers it carries and however many pages it is spread over — the questions cannot be read without the passage. Return a SINGLE entry with questionType "passage" and letter its sub-questions (a), (b), (c) as described below.\n` +
+    `  • The test: if you deleted every other question on the page, would this one still make complete sense on its own? If yes they are separate questions; if no they belong together as one.\n` +
+    `Then decide each question's type: "mcq" if it gives a set of answer options to choose from (e.g. (1)(2)(3)(4) or A/B/C/D), "passage" for a shared passage with questions about it, otherwise "open".\n` +
     `Then return ONLY JSON with this exact shape:\n` +
-    `{"title":"short title","topic":"<closest topic>","category":"<closest category>","tags":["..."],"questionType":"mcq, open or passage","blocks":[ ...ordered blocks... ]}\n` +
-    `Use "passage" when the source is a passage, article, poster or infographic followed by SEVERAL numbered questions about it — however many pages that is spread over.\n` +
+    `{"questions":[ ...one entry per question you found, in the order they appear... ]}\n` +
+    `Each entry is: {"title":"short title","topic":"<closest topic>","category":"<closest category>","tags":["..."],"questionType":"mcq, open or passage","blocks":[ ...ordered blocks... ]}\n` +
+    `A source holding ONE question returns an array of ONE entry. Give EVERY entry its own title, topic, category and tags — never leave them off the later entries.\n` +
+    `- THE PAPER'S QUESTION NUMBER IS ONLY THE SIGNAL that they are separate questions. Do NOT keep it anywhere: no "part" field, and never write "61" or "61." into the text of any block. A bank question stands on its own, and one that opens at question 61 reads as though sixty are missing.\n` +
+    `- Give each entry the blocks that match what THAT question actually is, decided per question and not once for the page: a sentence-rewrite becomes a "synthesis" block, a multiple-choice one an "mcq" block, a cloze passage a "clozeopen" or "clozebank" block, an editing passage an "editpassage" block, an open question a text block plus an answer block. Two questions on the same page can be different types.\n` +
     `Each item in "blocks" is ONE of these objects:\n` +
     (multi
       ? `  {"type":"image","page":<which attached image, 1-based>,"box_2d":[ymin,xmin,ymax,xmax]}   (one diagram/picture/graph/figure/experimental setup OR one data table — "page" says which attached image it is on, and box_2d is the rectangle you draw around it on THAT image)\n`
@@ -9749,7 +9787,11 @@ async function handleAiBuildFiles(files) {
     const raw = await askGeminiVision(prompt, pages.map(p => ({ mimeType: p.mimeType, data: p.data })), { maxOutputTokens: budget, json: true });
     const parsed = _parseAIJson(raw);
     const truncated = _aiJsonRepaired;
-    _populateEditorFromAi(parsed);
+    // A page of 61, 62, 63… is several questions, and the editor holds ONE. Load
+    // the first and say so — silently building only the first of five, with
+    // nothing on screen to say the other four existed, is how they get lost.
+    const payloads = _aiQuestionPayloads(parsed);
+    _populateEditorFromAi(payloads[0] || parsed);
     checkEditorDuplicate();   // warn if this looks like a question already in the bank
     const hasImageBlock = blocks.some(b => b.type === 'image');
     // A passage question is many sub-questions in one, so say what came out of
@@ -9760,6 +9802,9 @@ async function handleAiBuildFiles(files) {
     const uniqParts = partList.filter((p, i) => partList.indexOf(p) === i);
     const mcqs = blocks.filter(b => b.type === 'mcq');
     const unticked = mcqs.filter(b => !b.correctId).length;
+    if (payloads.length > 1) {
+      showToast(`📄 That page holds ${payloads.length} SEPARATE questions — the editor has loaded the first. Use ⚡ Rapid add to get all ${payloads.length} into vetting at once.`, 'info');
+    }
     if (truncated) {
       showToast('⚠️ The AI ran out of room and its answer was cut short — check the END of the question, the last sub-questions may be missing. Read the screenshots again in two smaller batches if so.', 'error');
     } else if (uniqParts.length > 1) {
@@ -10211,64 +10256,105 @@ async function processRapidJob(jobId, file) {
     const isImg = file.type && file.type.startsWith('image/');
     if (!isPdf && !isImg) throw new Error('not an image or PDF');
 
-    // 1) Read the question into blocks (same prompt as Build from screenshot).
+    // 1) Read the page into blocks (same prompt as Build from screenshot).
+    //
+    // A page of 61, 62, 63… holds FIVE questions, not one question with five
+    // parts: they share no passage, a student is served one at a time, and each
+    // is marked on its own. _aiQuestionPayloads is the one place that decision
+    // is read out of the reply.
     const b64 = await _fileToBase64(file);
-    const raw = await askGeminiVision(_aiBuildQuestionPrompt(isPdf), [{ mimeType: file.type, data: b64 }], { maxOutputTokens: 4096, json: true });
+    // The budget scales with what a page can hold. One question fits 4096; five
+    // synthesis questions with their model answers do not — and running out does
+    // not fail, it TRUNCATES, and _repairAIJson then hands back a valid-looking
+    // reply missing its last questions entirely.
+    const raw = await askGeminiVision(_aiBuildQuestionPrompt(isPdf), [{ mimeType: file.type, data: b64 }], { maxOutputTokens: 8192, json: true });
     const parsed = _parseAIJson(raw);
-    const q = buildQuestionFromAi(parsed);
+    const truncated = _aiJsonRepaired;
+    const payloads = _aiQuestionPayloads(parsed);
+    if (!payloads.length) throw new Error('the AI returned nothing readable');
+    const many = payloads.length > 1;
 
-    // 2) Crop each AI-drawn rectangle (box_2d) out of the screenshot into its
-    //    image block. If the selection failed everywhere, fall back to the old
-    //    flow: enhance the WHOLE picture and attach it to the first image block.
-    if (isImg) {
-      const imgBlocks = q.blocks.filter(b => b.type === 'image');
-      if (imgBlocks.length) {
-        _setRapidJobState(jobId, { title: q.title || 'Question', sub: 'Cropping the AI-selected pictures…' });
-        renderVettingList();
-        const boxes = ((parsed && parsed.blocks) || [])
-          .filter(b => String((b && b.type) || '').toLowerCase() === 'image')
-          .map(b => (b && (b.box_2d || b.box)) || null);
-        let filled = 0;
-        try {
-          filled = await _fillBlocksFromAiBoxes(imgBlocks, boxes, file.type, b64, m => { _setRapidJobState(jobId, { sub: m }); renderVettingList(); });
-        } catch (e) { console.warn('rapid AI rectangle flow failed', e); }
-        if (!filled) {
-          // BACKUP — whole screenshot, enhanced to black & white.
-          const imgBlock = imgBlocks[0];
-          _setRapidJobState(jobId, { sub: 'Enhancing the whole image (black & white)…' });
+    const added = [];
+    for (let pi = 0; pi < payloads.length; pi++) {
+      const payload = payloads[pi];
+      const q = buildQuestionFromAi(payload);
+      // The paper's number is the signal that these are separate questions, not
+      // part of any of them. The model is told not to keep it; this is the guard
+      // for when it does, and it is the exam paper builder's own stripper.
+      if (many) { try { _epStripNumbering(q); } catch (e) { console.warn('rapid numbering strip', e); } }
+
+      // 2) Crop each AI-drawn rectangle (box_2d) out of the screenshot into its
+      //    image block — from THIS question's own blocks, or five questions
+      //    would share the first one's pictures. If the selection failed
+      //    everywhere, fall back: enhance the WHOLE picture into the first
+      //    image block. That backup is for a single-question page only; on a
+      //    page of five it would give every one of them the same whole-page
+      //    picture, which is worse than no picture at all.
+      if (isImg) {
+        const imgBlocks = q.blocks.filter(b => b.type === 'image');
+        if (imgBlocks.length) {
+          _setRapidJobState(jobId, {
+            title: q.title || 'Question',
+            sub: (many ? `Question ${pi + 1} of ${payloads.length} — ` : '') + 'cropping the AI-selected pictures…'
+          });
           renderVettingList();
-          const original = 'data:' + file.type + ';base64,' + b64;
+          const boxes = (payload.blocks || [])
+            .filter(b => String((b && b.type) || '').toLowerCase() === 'image')
+            .map(b => (b && (b.box_2d || b.box)) || null);
+          let filled = 0;
           try {
-            const dataUrl = imageAiReady()
-              ? await generateEnhancedImageDataUrl(_BW_ENHANCE_PROMPT, [{ mimeType: file.type, data: b64 }])
-              : original;
-            imgBlock.url = await uploadImageDataUrl(dataUrl);
-            // Seed in-session image state so Crop / Touch up / Enhance work when this
-            // question is opened in the editor (mirrors Build-from-screenshot).
-            _imgEnhanceState[imgBlock.id] = { originalDataUrl: dataUrl, originalUrl: imgBlock.url, currentDataUrl: dataUrl };
-          } catch (imgErr) {
-            console.warn('rapid B&W enhance failed; attaching original screenshot', imgErr);
+            filled = await _fillBlocksFromAiBoxes(imgBlocks, boxes, file.type, b64, m => { _setRapidJobState(jobId, { sub: m }); renderVettingList(); });
+          } catch (e) { console.warn('rapid AI rectangle flow failed', e); }
+          if (!filled && !many) {
+            // BACKUP — whole screenshot, enhanced to black & white.
+            const imgBlock = imgBlocks[0];
+            _setRapidJobState(jobId, { sub: 'Enhancing the whole image (black & white)…' });
+            renderVettingList();
+            const original = 'data:' + file.type + ';base64,' + b64;
             try {
-              imgBlock.url = await uploadImageDataUrl(original);
-              _imgEnhanceState[imgBlock.id] = { originalDataUrl: original, originalUrl: imgBlock.url, currentDataUrl: original };
-            } catch (e2) { /* leave url empty; paste manually later */ }
+              const dataUrl = imageAiReady()
+                ? await generateEnhancedImageDataUrl(_BW_ENHANCE_PROMPT, [{ mimeType: file.type, data: b64 }])
+                : original;
+              imgBlock.url = await uploadImageDataUrl(dataUrl);
+              // Seed in-session image state so Crop / Touch up / Enhance work when this
+              // question is opened in the editor (mirrors Build-from-screenshot).
+              _imgEnhanceState[imgBlock.id] = { originalDataUrl: dataUrl, originalUrl: imgBlock.url, currentDataUrl: dataUrl };
+            } catch (imgErr) {
+              console.warn('rapid B&W enhance failed; attaching original screenshot', imgErr);
+              try {
+                imgBlock.url = await uploadImageDataUrl(original);
+                _imgEnhanceState[imgBlock.id] = { originalDataUrl: original, originalUrl: imgBlock.url, currentDataUrl: original };
+              } catch (e2) { /* leave url empty; paste manually later */ }
+            }
           }
         }
       }
+
+      // 3) Promote to a real Vetting question and persist. Done per question
+      //    rather than in a batch at the end, so a failure on question 4 cannot
+      //    lose the three that already read perfectly.
+      _tagDuplicate(q);   // flag if it looks like a question already in the bank
+      vettingList.unshift(q);
+      _rapidJustAdded.add(q.id);
+      _rapidAddedCount++;
+      added.push(q);
+      updateCounts();
+      _updateRapidCounts();
+      renderVettingList();
+      saveVettingQuestion(q); // async, non-blocking
     }
 
-    // 3) Promote to a real Vetting question (newest first) and persist.
-    _tagDuplicate(q);   // flag if it looks like a question already in the bank
     _removeRapidJob(jobId);
-    vettingList.unshift(q);
-    _rapidJustAdded.add(q.id);
-    _rapidAddedCount++;
-    updateCounts();
     _updateRapidCounts();
     renderVettingList();
-    saveVettingQuestion(q); // async, non-blocking
-    _setRapidStatus('✓ Added "' + (q.title || 'question') + '" to vetting.');
-    showToast('Added "' + (q.title || 'question') + '" to vetting ✓', 'success');
+    const what = many
+      ? `${added.length} separate questions`
+      : '"' + (added[0].title || 'question') + '"';
+    _setRapidStatus('✓ Added ' + what + ' to vetting.');
+    showToast('Added ' + what + ' to vetting ✓', 'success');
+    if (truncated) {
+      showToast('⚠️ The AI ran out of room and its answer was cut short — the LAST question on that page may be missing. Screenshot the rest on its own if so.', 'error');
+    }
   } catch (err) {
     console.error('rapid job failed:', err);
     const job = rapidJobs.find(j => j.id === jobId);
