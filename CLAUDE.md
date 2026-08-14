@@ -195,6 +195,40 @@ text block plus one MCQ per sub-question, each opening its numeric part.
 - **An unticked sub-question is saved with no correct option.** Guessing one
   marks every class that ever sits it against the wrong word.
 
+### Reading a passage set off SCREENSHOTS (v1.7.0)
+
+The multi-screenshot build and the `box_2d` auto-crop both already existed —
+`aiBuildFromScreenshot` reads N images as ONE question and
+`_autoFillDiagramsFromBoxes` crops each AI-drawn rectangle out of its own page.
+The one thing missing was a way for the model to say **"these four options are
+question 21 of the passage"**, so a comprehension page came back as eight
+option lists in a row with nothing telling them apart.
+
+- **`buildBlocksFromAi` honours an explicit `"part"`** on any AI block, through
+  `qPartNormalize` — so `"21"` and `"b"` both work — with `QPART_NONE`
+  preserved. It is stamped on the FIRST block that entry produced, because
+  `qPartMap` inherits forward. This is the ONE function every AI authoring path
+  goes through, so all of them gained it at once.
+- **`qLiftPartMarkers` already skipped a block that opens a part**, which is
+  what stops the typed-marker pass overwriting the model's numbering.
+- **The rules live in `_partsPromptRules()`**, the fragment all four build
+  prompts carry — do not restate them in a prompt.
+- **`qPartLabelFirst(blocks, block)` decides who prints the label.** A numbered
+  question is usually a text block (the wording) and an MCQ (the options) both
+  filed under (21); labelled twice the paper reads "(21) What does… (21) (1)
+  humans", which looks like a printing fault. `buildOpenBody` and both print
+  builders ask the same function, so screen and paper cannot disagree.
+- **The token budget scales with the pages** (`4096 + 3000 × extra`, capped at
+  16384). Running out does not fail — it TRUNCATES, and `_repairAIJson` then
+  hands back a valid-looking question missing its last few sub-questions.
+  `_aiJsonRepaired` is set when a reply had to be repaired, and the build warns
+  the author instead of letting the tail go quietly.
+- **A sub-question the model could not answer is built with NO tick.** It works
+  the answers out from the passage rather than reading a marking scheme, so the
+  completion toast says how many need checking. Never turn a missing
+  `correctIndex` into a guess.
+- Run **`node tools/ai-parts-tests.mjs`** after touching any of it.
+
 ### 🔤 The comprehension cloze (`cb*`, block type `clozebank`)
 
 One passage, numbered blanks, and a bank of words lettered (A)–(Q) above it.
@@ -656,7 +690,7 @@ reported in chat, to know whether the deploy actually went through.
   named constant used at every call site rather than a string typed out in three
   places, and swapping the model means checking its scale first. The Science app
   (`polymathlc/cer`) carries the same pair — keep the two in step.
-- Run the eight harnesses after touching what they cover — every failure they
+- Run the nine harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
@@ -676,6 +710,10 @@ reported in chat, to know whether the deploy actually went through.
     is about. Line them up wrong and the popout still opens, still looks right
     and still reads fluently, while telling a child that "reluctantly" cannot be
     used because it is an adjective.
+  - `node tools/ai-parts-tests.mjs` — the `"part"` the AI puts on a block, and
+    that the typed-marker pass leaves it alone. Drop it and a comprehension page
+    is eight option lists in a row with nothing telling them apart, on a screen
+    that still looks right.
   - `node tools/passage-cloze-tests.mjs` — the passage builder's parse, the
     cloze's word bank, and the numeric part labels both rest on. A passage split
     one line early swallows the first option list; a question number read off a

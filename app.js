@@ -298,8 +298,17 @@ async function askGemini(prompt, { maxOutputTokens = 512, temperature = 0.3, jso
   return (res.response.text() || "").trim();
 }
 
+// Was the LAST _parseAIJson reply broken enough to need repairing? Almost
+// always that means the model ran out of output tokens mid-sentence, and the
+// repair closed the brackets around whatever had arrived. The repair is right —
+// half a question beats none — but it is SILENT, and on a long answer (a
+// comprehension passage with eight sub-questions) what it quietly drops is the
+// last few questions. A caller that can lose content this way reads the flag
+// and says so; nothing else has to care.
+let _aiJsonRepaired = false;
 // Tolerant JSON parse for model output (strips code fences, finds the array/object).
 function _parseAIJson(raw) {
+  _aiJsonRepaired = false;
   let s = (raw || '').trim();
   if (!s) throw new Error('empty AI response — please try again');
   s = s.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
@@ -307,7 +316,7 @@ function _parseAIJson(raw) {
   if (start > 0) s = s.slice(start);
   try { return JSON.parse(s); }
   catch (firstErr) {
-    try { return JSON.parse(_repairAIJson(s)); }
+    try { const v = JSON.parse(_repairAIJson(s)); _aiJsonRepaired = true; return v; }
     catch (_) { throw firstErr; }
   }
 }
@@ -1740,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.6.0';
+const APP_VERSION = 'v1.7.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -8795,6 +8804,9 @@ function buildBlocksFromAi(data) {
   if (Array.isArray(data.blocks)) {
     data.blocks.forEach(b => {
       const t = String((b && b.type) || '').toLowerCase();
+      // Where the block lands once it is built, so an explicit "part" from the
+      // AI can be stamped on it below.
+      const _at = blocks.length;
       if (t === 'text') {
         const txt = _separateOptionLines(stripBrackets(b.text || b.content));
         if (txt) blocks.push({ id: generateBlockId(), type: 'text', content: txt });
@@ -8817,6 +8829,22 @@ function buildBlocksFromAi(data) {
         const expl = stripBrackets(b.text || b.content);
         if (expl) blocks.push({ id: generateBlockId(), type: 'explanation', content: expl });
       }
+      // An explicit part from the AI, stamped on whatever this entry built.
+      //
+      // This is the only way the model can say "these four options are question
+      // 21 of the passage". Without it a comprehension page — one passage, then
+      // 21 to 28 — comes back as eight option lists in a row with nothing
+      // telling them apart, and the answer key prints all eight under one
+      // heading. qPartNormalize takes a NUMBER or a letter, so "21" and "b"
+      // both work, and qLiftPartMarkers leaves a block that already opens a
+      // part alone — the typed-marker pass cannot overwrite this.
+      //
+      // Only the FIRST block of the entry is stamped: qPartMap inherits
+      // forward, so labelling every one of them would be the same part opened
+      // twice over.
+      const rawPart = String((b && b.part) != null ? b.part : '').trim();
+      const part = rawPart === QPART_NONE ? QPART_NONE : qPartNormalize(rawPart);
+      if (part && blocks.length > _at) blocks[_at].part = part;
     });
   } else {
     const qText = _separateOptionLines(stripBrackets(data.questionText));
@@ -9340,10 +9368,11 @@ function _aiBuildQuestionPrompt(isPdf, imageCount) {
   return `You are helping a Singapore primary-school English teacher turn an exam question (${multi ? `spread across the ${n} attached images` : `in the attached ${isPdf ? 'PDF' : 'image'}`}) into a practice question.\n` +
     SCAN_READING_NOTE +
     _genPreamble() +
-    (multi ? `IMPORTANT: the ${n} attached images are CONSECUTIVE screenshots of ONE AND THE SAME question, already in reading order (image 1 first). Read them as one continuous question — do NOT treat them as separate questions and do NOT drop content from any of the images.\n` : '') +
+    (multi ? `IMPORTANT: the ${n} attached images are CONSECUTIVE screenshots of ONE AND THE SAME question, already in reading order (image 1 first). Read them as one continuous question — do NOT treat them as separate questions and do NOT drop content from any of the images. Very often this is a PASSAGE on the first image or two and the numbered questions about it on the rest: that is questionType "passage", and every numbered question becomes its own "part". Content from the LAST image matters as much as the first — read to the end.\n` : '') +
     `FIRST decide the question type: "mcq" if the question gives a set of answer options to choose from (e.g. (1)(2)(3)(4) or A/B/C/D), otherwise "open".\n` +
     `Then return ONLY JSON with this exact shape:\n` +
-    `{"title":"short title","topic":"<closest topic>","category":"<closest category>","tags":["..."],"questionType":"mcq or open","blocks":[ ...ordered blocks... ]}\n` +
+    `{"title":"short title","topic":"<closest topic>","category":"<closest category>","tags":["..."],"questionType":"mcq, open or passage","blocks":[ ...ordered blocks... ]}\n` +
+    `Use "passage" when the source is a passage, article, poster or infographic followed by SEVERAL numbered questions about it — however many pages that is spread over.\n` +
     `Each item in "blocks" is ONE of these objects:\n` +
     (multi
       ? `  {"type":"image","page":<which attached image, 1-based>,"box_2d":[ymin,xmin,ymax,xmax]}   (one diagram/picture/graph/figure/experimental setup OR one data table — "page" says which attached image it is on, and box_2d is the rectangle you draw around it on THAT image)\n`
@@ -9359,6 +9388,7 @@ function _aiBuildQuestionPrompt(isPdf, imageCount) {
     _rectangleRules() +
     `- If a text block lists labelled statements or answer options inline (e.g. "A: ...", "B: ...", "(1) ...", "(2) ..."), put EACH labelled item on its OWN line — separate them with a real line break ("\\n") so they do not run together in one paragraph.\n` +
     `- If questionType is "mcq": include exactly ONE "mcq" block. Copy each answer option verbatim into "options" WITHOUT its leading number/letter, and set "correctIndex" to the 0-based index of the correct option. Do NOT include "answer" or "plainanswer" blocks.\n` +
+    `- If questionType is "passage": include ONE "mcq" block PER numbered question — eight questions means eight "mcq" blocks — each carrying its own "part". Work each correct answer out from the passage and set "correctIndex"; if one genuinely cannot be answered from what is shown, omit "correctIndex" for that question rather than guessing at it. Do NOT include "answer" or "plainanswer" blocks.\n` +
     `- If questionType is "open": include an answer block — use "answer" (Claim-Evidence-Reasoning) for a full explanation, or "plainanswer" for a short answer — one for a question with no parts, one per part for a question with parts. In these answer fields only, wrap each KEY key word a student should recall in [[double brackets]] (whole words, about 3 to 8 total). Do NOT bracket anything in text, options or explanation.\n` +
     `- An "explanation" block is 2-4 sentences a teacher would give a P3-P6 student explaining WHY the correct answer is correct — write it yourself if the source shows none, and never leave the question without one.\n` +
     _partsPromptRules() +
@@ -9376,6 +9406,11 @@ function _aiBuildQuestionPrompt(isPdf, imageCount) {
 // one explanation covering three parts, dropped under part (a), is wrong.
 function _partsPromptRules() {
   return `- LETTERED PARTS: if the question has sub-parts (a), (b), (c), give EACH part its own text block, starting with its own marker written exactly as "(a) " / "(b) " — one marker per block, never two parts in the same block.\n` +
+    `- THE "part" FIELD: any block may carry "part" — the sub-question it belongs to, written exactly as the paper prints it: "part":"a" for a lettered part, "part":"21" for a numbered one.\n` +
+    `- A PASSAGE WITH NUMBERED QUESTIONS — a comprehension passage, article, poster or infographic followed by questions numbered 21, 22, 23… — is ONE question, never one question per number. Put the passage FIRST: its text blocks, and one "image" block for each picture, poster or diagram in it. Then one block for each numbered question that follows, in order.\n` +
+    `- Give every one of those numbered questions "part" set to the number PRINTED ON THE PAPER: "part":"21", "part":"22", "part":"23". Use the paper's own numbers exactly — never renumber them 1, 2, 3 and never relabel them (a), (b), (c). Those numbers are the only thing tying each set of options back to the passage.\n` +
+    `- Where such a question has wording of its own, put it in a "text" block carrying the SAME "part", directly above the block that answers it. The shared instruction line above the passage ("For each question from 21 to 28, four options are given…") gets NO "part" at all.\n` +
+    `- A poster, infographic, advertisement or illustrated article used as the passage is ONE "image" block with the rectangle drawn around the WHOLE of it. Do not transcribe it into text and do not cut it into pieces.\n` +
     `- Give EACH part its own answer block ("answer" or "plainanswer") directly under the text block that asks it, so every part has its own model answer.\n` +
     `- EXPLANATIONS follow the parts: a question with NO parts finishes with ONE "explanation" block; a question WITH parts gets ONE explanation block PER PART, placed directly after that part's own answer block and explaining ONLY that part's question and answer. Never write one explanation covering several parts, and never put an explanation about part (b) underneath part (a).\n`;
 }
@@ -9488,15 +9523,35 @@ async function handleAiBuildFiles(files) {
     const pages = [];
     for (const f of files) pages.push({ mimeType: f.type, data: await _fileToBase64(f) });
     const prompt = _aiBuildQuestionPrompt(isPdf, pages.length);
-    const raw = await askGeminiVision(prompt, pages.map(p => ({ mimeType: p.mimeType, data: p.data })), { maxOutputTokens: 4096, json: true });
+    // The budget scales with the pages. A single question fits 4096 easily; a
+    // comprehension passage plus eight sub-questions, each with four options,
+    // does not — and running out does not fail, it TRUNCATES, and the repair
+    // then hands back a valid-looking question missing its last few parts.
+    const budget = Math.min(16384, 4096 + Math.max(0, pages.length - 1) * 3000);
+    const raw = await askGeminiVision(prompt, pages.map(p => ({ mimeType: p.mimeType, data: p.data })), { maxOutputTokens: budget, json: true });
     const parsed = _parseAIJson(raw);
+    const truncated = _aiJsonRepaired;
     _populateEditorFromAi(parsed);
     checkEditorDuplicate();   // warn if this looks like a question already in the bank
     const hasImageBlock = blocks.some(b => b.type === 'image');
+    // A passage question is many sub-questions in one, so say what came out of
+    // it: how many parts, and how many still need their answer ticked. The
+    // model works those out from the passage rather than reading them off a
+    // marking scheme, so they are a proposal to check, not a key.
+    const partList = blocks.map(b => qBlockOpensPart(b)).filter(Boolean);
+    const uniqParts = partList.filter((p, i) => partList.indexOf(p) === i);
+    const mcqs = blocks.filter(b => b.type === 'mcq');
+    const unticked = mcqs.filter(b => !b.correctId).length;
+    if (truncated) {
+      showToast('⚠️ The AI ran out of room and its answer was cut short — check the END of the question, the last sub-questions may be missing. Read the screenshots again in two smaller batches if so.', 'error');
+    } else if (uniqParts.length > 1) {
+      showToast(`📑 Built one question with ${uniqParts.length} parts — (${uniqParts.join(') (')})`
+        + (unticked ? ` · ${unticked} still ${unticked === 1 ? 'needs its' : 'need their'} answer ticked` : ' · check the ticked answers before saving'), 'success');
+    }
     if (!isPdf && hasImageBlock) {
-      showToast('Question built ✓ — cropping the AI-selected pictures next…', 'success');
+      if (!truncated && uniqParts.length <= 1) showToast('Question built ✓ — cropping the AI-selected pictures next…', 'success');
       _autoFillDiagramsFromBoxes(parsed, pages); // async: crops each AI-drawn rectangle from its own screenshot; the whole screenshot is the backup
-    } else {
+    } else if (!truncated && uniqParts.length <= 1) {
       showToast('Question built — review it' + (hasImageBlock ? ', paste the diagram,' : '') + ' then Save', 'success');
     }
   } catch (e) {
@@ -12800,6 +12855,20 @@ function qApplyAiParts(blocks) {
   return out;
 }
 function qPartOf(map, block) { return (map && block && map.get(block)) || ''; }
+// Should THIS block print the part label, or has an earlier one already printed
+// it for the same part? A numbered comprehension question is usually a text
+// block carrying the wording and an MCQ carrying the options, both filed under
+// (21) — and the label belongs above the pair, once. Asked by buildOpenBody and
+// by both print builders, so the screen and the paper cannot disagree.
+function qPartLabelFirst(blocks, block) {
+  const own = qBlockOpensPart(block);
+  if (!own) return false;
+  for (const b of (blocks || [])) {
+    if (b === block) return true;
+    if (qBlockOpensPart(b) === own) return false;
+  }
+  return true;
+}
 // Which part a block OPENS, or '' if it just belongs to the current one.
 // Two authoring styles feed this: the `part` FIELD added in v1.234.0, and the
 // worksheet-creator's dedicated `part` BLOCK type, which has carried its label
@@ -13641,7 +13710,7 @@ function doPrintWorksheetOpen() {
           // open one (see QPART_OPENER_TYPES), and without this the paper shows
           // four bare options while the answer key calls them question 16.
           const ownP = qPartNormalize(block.part);
-          if (ownP) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownP))}</span></div>`;
+          if (ownP && qPartLabelFirst(q.blocks, block)) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownP))}</span></div>`;
           qHtml += renderImportedBlockStudent(block);
           // The correct option, an answer line's answer and a 🔑 answer-key
           // block all belong on the key. Without them an MCQ-only question
@@ -19428,7 +19497,7 @@ function buildOpenBody(q, containerSel, markCfg) {
         const mcqPart = qBlockOpensPart(block);
         if (mcqPart && cur && cur.hasAnswer) cur = null;
         addAnswer(
-          (mcqPart ? _qpTextHtml(mcqPart, '') : '') +
+          (mcqPart && qPartLabelFirst(q.blocks, block) ? _qpTextHtml(mcqPart, '') : '') +
           renderImportedBlockStudent(block, q) +
           _partActionsHtml(containerSel, 'mcq', block.id) +
           `<div class="mcq-feedback" data-mcq-fb="${block.id}" style="margin:2px 0 4px;"></div>`
@@ -23117,7 +23186,7 @@ function buildWorksheetHtml(selected, worksheetTitle, opts) {
             // open one (see QPART_OPENER_TYPES), and without this the paper shows
             // four bare options while the answer key calls them question 16.
             const ownP = qPartNormalize(block.part);
-            if (ownP) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownP))}</span></div>`;
+            if (ownP && qPartLabelFirst(q.blocks, block)) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownP))}</span></div>`;
             qHtml += renderImportedBlockStudent(block);
             // Unconditional, exactly as doPrintWorksheetOpen does it: an MCQ's
             // correct option is the answer to that question, not an optional

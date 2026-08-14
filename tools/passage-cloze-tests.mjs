@@ -28,7 +28,11 @@ const slice = (from, to, what) => {
 };
 
 // The numeric-part rules, the passage parse, and the cloze's bank.
-const parts = slice('const QPART_NUM_RE =', 'function qPartLabel(', 'numeric part rules');
+const parts = slice('const QPART_NUM_RE =', 'function qPartLabel(', 'numeric part rules')
+  // qBlockOpensPart and qPartLabelFirst decide, between them, which block wears
+  // the label on screen and on paper.
+  + slice('function qBlockOpensPart(b)', '// Does this question use parts at all', 'part openers')
+  + slice('function qPartLabelFirst(blocks, block)', '\n}\n', 'label-first') + '\n}\n';
 const pb = slice('const PB_QLINE_RE =', '// ---- the dialog ---', 'passage builder parse');
 const cb = slice('const CB_LETTERS =', '// ---- the student\'s passage', 'cloze bank')
   // cbAnswerKeyText sits below the DOM half, so it is taken on its own rather
@@ -59,7 +63,7 @@ function createBlock(type) {
 `;
 
 const M = new Function(preamble + parts + cb + pb +
-  '\nreturn { qPartIsNum, qPartNormalize, _pbQStart, _pbParse, _pbParseKey, _pbPassageHtml, pbBuildBlocks,' +
+  '\nreturn { qPartIsNum, qPartNormalize, qBlockOpensPart, qPartLabelFirst, _pbQStart, _pbParse, _pbParseKey, _pbPassageHtml, pbBuildBlocks,' +
   ' cbBank, cbBankMap, _cbGrid, cbIntro, cbAnswerKeyText, _cbBlanks, _cbStart, cbHasBlanks, CB_LETTERS };')();
 
 const cases = [];
@@ -321,6 +325,47 @@ test('a bank longer than the alphabet is cut, never wrapped onto a used letter',
 test('a malformed cloze never throws', () => {
   [null, undefined, {}, { type: 'clozebank' }, { type: 'clozebank', text: null, extras: null }]
     .forEach(b => { M.cbBank(b); M.cbBankMap(b); M.cbIntro(b); M.cbAnswerKeyText(b); M._cbStart(b); });
+});
+
+// ── which block wears the part label ────────────────────────────────────────
+
+test('an MCQ can open a part, so a numbered sub-question needs no empty text block', () => {
+  eq(M.qBlockOpensPart({ type: 'mcq', part: '21' }), '21');
+  eq(M.qBlockOpensPart({ type: 'image', part: '21' }), '21');
+  eq(M.qBlockOpensPart({ type: 'mcq' }), '');
+});
+
+test('a lone MCQ prints its own part label', () => {
+  const mcq = { type: 'mcq', part: '21' };
+  const bs = [{ type: 'text' }, mcq];
+  ok(M.qPartLabelFirst(bs, mcq), 'nothing above it opened (21)');
+});
+
+test('a wording block and its MCQ under one part label it ONCE', () => {
+  // The comprehension shape: the question's wording is a text block and its
+  // options an MCQ, both filed under (21). Labelled twice the paper reads
+  // "(21) What does…  (21) (1) humans", which looks like a printing fault.
+  const txt = { type: 'text', part: '21', content: 'What does the word mean?' };
+  const mcq = { type: 'mcq', part: '21' };
+  const bs = [{ type: 'text' }, txt, mcq];
+  ok(M.qPartLabelFirst(bs, txt), 'the wording prints the label');
+  ok(!M.qPartLabelFirst(bs, mcq), 'the MCQ must not repeat it');
+});
+
+test('each numbered question still gets its own label', () => {
+  const a = { type: 'mcq', part: '21' }, b = { type: 'mcq', part: '22' };
+  const bs = [{ type: 'text' }, a, b];
+  ok(M.qPartLabelFirst(bs, a), '(21) missing');
+  ok(M.qPartLabelFirst(bs, b), '(22) missing');
+});
+
+test('a block with no part never prints a label', () => {
+  const b = { type: 'mcq' };
+  ok(!M.qPartLabelFirst([b], b));
+});
+
+test('a malformed block list never throws', () => {
+  [null, undefined, [], [null]].forEach(bs => M.qPartLabelFirst(bs, { type: 'mcq', part: '21' }));
 });
 
 // ── runner ───────────────────────────────────────────────────────────────────
