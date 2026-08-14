@@ -94,6 +94,36 @@
   #ppHover .pp-hv-edit { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; font-size:0.8rem; font-weight:700; color:#fff; background:var(--primary,#0b6b4f); border:none; border-radius:9px; cursor:pointer; box-shadow:0 2px 6px rgba(49,99,66,0.22); transition:background .15s, transform .1s; }
   #ppHover .pp-hv-edit:hover { background:var(--primary-dark,#085740); }
   #ppHover .pp-hv-edit:active { transform:translateY(1px); }
+/* ---- 💬 Word & grammar help — the popout on a MARKED question's options ----
+   Armed only after marking, by whArm() in app.js, and taken away again by
+   resetOpenAnswersIn(). The ⓘ badge is the ONLY thing that tells a student the
+   help is there at all, so it has to appear with the mark and go with it.
+   The badge is a flex child of the option's <label> (which is inline-styled
+   display:flex), not an absolutely-positioned overlay — margin-left:auto is
+   what puts it on the right, and it costs the option row no extra padding. */
+  .wh-badge { flex:0 0 auto; margin-left:auto; align-self:center; width:26px; height:26px; display:flex; align-items:center; justify-content:center; padding:0; border:0; border-radius:50%; background:rgba(0,0,0,0.06); color:var(--text-muted); font-size:0.95rem; line-height:1; cursor:help; transition:background .15s ease, color .15s ease, transform .15s ease; }
+  .wh-badge:hover, .wh-badge:focus-visible { background:var(--accent-blue-light,#eaf1f8); color:var(--accent-blue,#2d6ca8); transform:scale(1.12); outline:none; }
+  .wh-badge:focus-visible { box-shadow:0 0 0 2px var(--accent-blue,#2d6ca8); }
+
+  #whPop { position:fixed; z-index:4200; display:none; width:min(330px, calc(100vw - 28px)); max-height:min(70vh, 460px); overflow-y:auto; overscroll-behavior:contain; background:var(--surface,#fff); border:1px solid var(--border); border-radius:14px; box-shadow:0 16px 46px rgba(0,0,0,0.17); padding:18px 20px 20px; font-size:0.87rem; line-height:1.7; color:var(--text); }
+  #whPop .wh-head { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:11px; }
+  #whPop .wh-num { flex:0 0 auto; width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; background:var(--surface-alt,#fafbfa); border:1px solid var(--border); font-size:0.74rem; font-weight:800; color:var(--text-muted); }
+  #whPop .wh-word { font-weight:700; font-size:1rem; line-height:1.45; }
+  #whPop .wh-yours { font-size:0.66rem; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:var(--accent-blue,#2d6ca8); background:var(--accent-blue-light,#eaf1f8); border-radius:999px; padding:3px 9px; }
+  #whPop .wh-close { margin-left:auto; align-self:flex-start; flex:0 0 auto; width:28px; height:28px; display:flex; align-items:center; justify-content:center; padding:0; border:0; border-radius:50%; background:rgba(0,0,0,0.06); color:var(--text); font-size:0.78rem; line-height:1; cursor:pointer; }
+  #whPop .wh-close:hover { background:rgba(0,0,0,0.12); }
+  #whPop .wh-verdict { font-size:0.78rem; font-weight:700; padding:8px 12px; border-radius:9px; margin-bottom:15px; }
+  #whPop .wh-verdict.ok { color:#166534; background:#dcfce7; }
+  #whPop .wh-verdict.no { color:#991b1b; background:#fee2e2; }
+  #whPop .wh-sec + .wh-sec { margin-top:15px; }
+  #whPop .wh-lab { font-size:0.67rem; font-weight:800; letter-spacing:0.07em; text-transform:uppercase; color:var(--text-muted); margin-bottom:5px; }
+  #whPop .wh-txt { line-height:1.75; }
+  #whPop .wh-note, #whPop .wh-load { display:flex; align-items:center; gap:9px; color:var(--text-muted); font-size:0.83rem; line-height:1.6; }
+  #whPop .wh-dots { display:inline-flex; gap:4px; flex:0 0 auto; }
+  #whPop .wh-dots i { width:5px; height:5px; border-radius:50%; background:var(--accent-blue,#2d6ca8); animation:whBlink 1.05s infinite ease-in-out; }
+  #whPop .wh-dots i:nth-child(2) { animation-delay:.16s; }
+  #whPop .wh-dots i:nth-child(3) { animation-delay:.32s; }
+  @keyframes whBlink { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
 /* ---- 🎯 The learning-objective chips on a question, and their picker ----
    These live on the CREATE page, not inside the Learning Objectives page's
    injected loStyles(), so they belong here, once, globally. The names are

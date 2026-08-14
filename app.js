@@ -1740,7 +1740,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.4.0';
+const APP_VERSION = 'v1.5.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -20076,6 +20076,10 @@ function resetOpenAnswersIn(containerSel, scoreElId) {
   document.querySelectorAll(containerSel + ' .part-ai-btn').forEach(b => { b.disabled = false; });
   document.querySelectorAll(containerSel + ' .mcq-block label').forEach(l => { l.style.background = ''; l.style.borderColor = 'var(--border)'; });
   document.querySelectorAll(containerSel + ' .mcq-block input[type="radio"]').forEach(r => { r.checked = false; });
+  // The word-help badges go with the mark that put them there. Left behind,
+  // they are an answer key on the second attempt: hover the four options and
+  // the one that "fits" is the one to tick.
+  document.querySelectorAll(containerSel + ' .mcq-block').forEach(whDisarm);
   const c = document.querySelector(containerSel);
   if (c) c.querySelectorAll('.post-explanation').forEach(el => el.remove());
   // Wipe any diagram annotations (strokes + text labels + feedback) too.
@@ -20102,6 +20106,333 @@ function _questionContext(q) {
     parts.push((opens ? qPartLabel(opens) + ' ' : '') + stripHtml(b.content || ''));
   });
   return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 800);
+}
+
+// =====================================================================
+// 💬 WORD & GRAMMAR HELP — the popout on a MARKED question's options
+// =====================================================================
+// Once a multiple-choice question has been marked, every option becomes
+// hoverable — tap the ⓘ on a touch screen — and the card that opens says two
+// things: what the word or phrase MEANS, and why that word does or does not
+// work in THIS sentence. The tense, the preposition, the part of speech, the
+// partner word it has to go with.
+//
+// The second half is the point of it. A student who picked "reluctant" over
+// "reluctantly" has been told they were wrong and nothing else, and on an
+// MCQ-only question they are told nothing further at all: the A.I. Explanation
+// card is generated only when the question has an OPEN part (`hasOpen` in
+// _genAndShowExplanation), so a whole paper of grammar practice can end at a
+// red border and a green one.
+//
+// Four rules hold it together:
+//
+//  • It arms only AFTER marking, from `_mcqPaintResult` — the ONE painter all
+//    three marking paths go through — and from nowhere else. Armed a moment
+//    earlier it is an answer key: hover the four options before answering and
+//    the one that "fits" is the one to tick. `resetOpenAnswersIn` disarms it
+//    again for the same reason, or a reset question keeps its ⓘ badges and the
+//    second attempt is open book.
+//  • ONE call covers the WHOLE option list, never one per option. The model has
+//    to see the four together to say why this one beats that one, the student
+//    reads two or three in a row, and a call per option is four round trips for
+//    one question.
+//  • An option with no words in it gets no badge. A question whose choices read
+//    "(1) (2) (3) (4)" against a diagram — the shape ✅ Check Questions exists
+//    to encourage — has no word to define, and a badge promising a meaning it
+//    cannot give is worse than no badge at all.
+//  • An answer is placed against an option by the option's OWN number and
+//    nothing else. This is the one failure the feature can produce silently:
+//    an explanation shown under the wrong option reads perfectly and teaches a
+//    child the opposite of the truth. See `_whNormItems`.
+const WH_HOVER_MS = 160;      // hover intent — a cursor crossing the list must not fire four cards
+const WH_HIDE_MS = 160;       // grace on the way out, so moving INTO the card doesn't close it
+const WH_MEANING_MAX = 240;   // characters kept from either field: the card is a glance, not an essay
+const WH_WHY_MAX = 400;
+
+// ---- what there is to explain, and which option each answer belongs to -----
+// Is there a word here at all? An option reading "(3)" against a diagram has
+// none of its own, and the whole block is skipped rather than badged. The
+// leading "(3)" is stripped first, or every numbered option would look wordy.
+function _whHasWords(options) {
+  return (options || []).some(o => {
+    const t = String((o && o.text) || '').replace(/^\s*\(?\s*\d+\s*\)?\s*[.)]?\s*/, '');
+    return /[A-Za-z]{2,}/.test(t);
+  });
+}
+function _whClean(it) {
+  if (!it || typeof it !== 'object') return null;
+  const one = (v, max) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
+  const meaning = one(it.meaning != null ? it.meaning : it.means, WH_MEANING_MAX);
+  const why = one(it.why != null ? it.why : (it.fit != null ? it.fit : it.reason), WH_WHY_MAX);
+  return (meaning || why) ? { meaning, why } : null;
+}
+// The model's answers put back against the options they were written about.
+//
+// Placed by the entry's OWN number, run through _normMcqChoice so "(2)", "2."
+// and "B" all land on option 2, and a number the option list does not have is
+// dropped rather than squeezed in somewhere. A repeated number is a duplicate,
+// not a second option, so the first one wins.
+//
+// Positional order is the fallback, and ONLY when the model numbered NOTHING
+// at all and returned exactly one entry per option. A partial unnumbered list
+// cannot be lined up — the third entry might belong to option 3 or to option 4
+// — and a guess there shows a child the wrong explanation with every
+// appearance of being right.
+function _whNormItems(parsed, options) {
+  const raw = Array.isArray(parsed) ? parsed
+    : ((parsed && (parsed.options || parsed.items || parsed.explanations)) || []);
+  const list = Array.isArray(raw) ? raw : [];
+  const opts = options || [];
+  const known = new Set(opts.map(o => String(o && o.letter)));
+  const out = {};
+  let numbered = 0;
+  list.forEach(it => {
+    if (!it || typeof it !== 'object') return;
+    const src = it.n != null ? it.n : (it.option != null ? it.option : (it.number != null ? it.number : it.letter));
+    const n = _normMcqChoice(src);
+    if (!n || !known.has(n)) return;
+    numbered++;
+    if (out[n]) return;
+    const cleaned = _whClean(it);
+    if (cleaned) out[n] = cleaned;
+  });
+  if (!numbered && list.length === opts.length) {
+    opts.forEach((o, i) => { const c = _whClean(list[i]); if (c) out[String(o && o.letter)] = c; });
+  }
+  return out;
+}
+function _whPrompt(q, mcq) {
+  const opts = (mcq && mcq.options) || [];
+  const printed = opts.map(o => `(${o.letter}) ${String(o.text || '').trim() || '(blank)'}`).join('\n');
+  const correct = opts.find(o => o.correct);
+  const ctx = q ? _questionContext(q) : '';
+  return `You are a patient Singapore primary-school English teacher. A student has just finished the multiple-choice question below, and is now reading the options one at a time to understand them.\n\n` +
+    (ctx ? `THE QUESTION: ${ctx}\n\n` : '') +
+    `THE OPTIONS:\n${printed}\n\n` +
+    (correct
+      ? `Option (${correct.letter}) is the correct one.\n\n`
+      : `No option is recorded as correct — work out which one it is yourself.\n\n`) +
+    `For EVERY option, write two things, addressed to the student as "you":\n` +
+    `• "meaning" — what that word or phrase MEANS, in plain language a 10-year-old understands. Max 20 words. If it is a phrase or an idiom, explain the whole phrase, not just one word of it. If the option is only a number or a label with no words of its own, leave "meaning" empty.\n` +
+    `• "why" — for a WRONG option: why that word CANNOT be used in this sentence. Name the reason in plain words — the wrong tense, the wrong preposition, singular where the sentence needs plural, an adjective where the sentence needs an adverb, the right meaning but the wrong partner word, too formal for the sentence — and show it against the sentence, quoting the few words around the gap. For the CORRECT option: why it DOES fit. Max 35 words either way.\n\n` +
+    `Rules: each entry explains ONE option and never mentions the others by number. Never open with "The answer is". Never use a grammar term without saying what it means in the same breath. Plain sentences, no markdown, no bullet characters.\n\n` +
+    `Return ONLY JSON: {"options":[{"n":"1","meaning":"...","why":"..."},{"n":"2","meaning":"...","why":"..."}]} — one entry per option, in order, "n" being the option number exactly as printed above.`;
+}
+
+// ---- the AI call, cached per option list -----------------------------------
+let _whCache = {};    // cache key -> Promise<{letter: {meaning, why}}>, one entry per option list
+// The PROMPT is the cache key. It carries the question text, every option and
+// which one is correct, so an edited question can never be served the previous
+// wording's explanations — and askGeminiCached hashes exactly the same string
+// into sessionStorage, so the two layers agree by construction. The in-memory
+// promise is what collapses the two or three hovers a student fires while the
+// first call is still in the air into one request.
+async function _whLoad(containerSel, mcq) {
+  const prompt = _whPrompt(_openQStore[containerSel], mcq);
+  const key = _aiHash(prompt);
+  if (_whCache[key]) return _whCache[key];
+  if (!window.__aiReady || !window.__aiReady()) return null;
+  const p = (async () => {
+    const raw = await askGeminiCached(prompt, {
+      maxOutputTokens: 200 + ((mcq && mcq.options) || []).length * 150,
+      temperature: 0.2, json: true
+    });
+    return _whNormItems(_parseAIJson(raw), mcq && mcq.options);
+  })().catch(e => {
+    console.warn('Word help failed:', e);
+    delete _whCache[key];
+    // askGeminiCached has already put the raw reply in sessionStorage under
+    // this same key. If it was the PARSE that failed, leaving it there makes
+    // every retry for the rest of the session fail instantly on the same bad
+    // reply — so the cached copy goes with the failure.
+    try { sessionStorage.removeItem(key); } catch (_) {}
+    return null;
+  });
+  _whCache[key] = p;
+  return p;
+}
+
+// ---- the card --------------------------------------------------------------
+let _whEl = null;        // the card; one for the whole page
+let _whTimer = null;     // hover intent
+let _whHideTimer = null;
+let _whShowing = '';     // token of the option on screen, so a slow call cannot overwrite a newer card
+let _whPinned = false;   // opened by tap or keyboard rather than hover — stays until dismissed
+function _whToken(containerSel, blockId, letter) { return containerSel + '|' + blockId + '|' + letter; }
+function _whCoarsePointer() {
+  try { return !!(window.matchMedia && window.matchMedia('(hover: none)').matches); } catch (e) { return false; }
+}
+function _whCardEl() {
+  if (_whEl) return _whEl;
+  _whEl = document.createElement('div');
+  _whEl.id = 'whPop';
+  _whEl.addEventListener('mouseenter', () => clearTimeout(_whHideTimer));
+  _whEl.addEventListener('mouseleave', () => { if (!_whPinned) _whHideSoon(); });
+  _whEl.addEventListener('click', ev => { if (ev.target.closest('[data-wh-close]')) _whHide(); });
+  document.body.appendChild(_whEl);
+  // A fixed card whose anchor has scrolled away points at nothing, so it goes
+  // when the page moves. All of this is bound once, on first use — a student
+  // who never hovers an option pays for none of it.
+  window.addEventListener('scroll', _whHide, true);
+  window.addEventListener('resize', _whHide);
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') _whHide(); });
+  document.addEventListener('click', ev => {
+    if (!_whPinned || !_whEl) return;
+    if (_whEl.contains(ev.target) || (ev.target.closest && ev.target.closest('.wh-badge'))) return;
+    _whHide();
+  });
+  return _whEl;
+}
+function _whHide() {
+  clearTimeout(_whTimer); clearTimeout(_whHideTimer);
+  _whShowing = ''; _whPinned = false;
+  if (_whEl) { _whEl.style.display = 'none'; _whEl.classList.remove('wh-pinned'); }
+}
+function _whHideSoon() { clearTimeout(_whHideTimer); _whHideTimer = setTimeout(_whHide, WH_HIDE_MS); }
+// Beside the option first. A card dropped straight below covers the NEXT
+// option, and a student reading down the list then cannot reach it; under and
+// over are the fallbacks for a narrow screen, where there is no room either
+// side. Clamped to the viewport last, so nothing ever opens off the edge.
+function _whPlace(anchor) {
+  const el = _whCardEl();
+  if (!anchor || !anchor.getBoundingClientRect) return;
+  const r = anchor.getBoundingClientRect();
+  el.style.visibility = 'hidden';
+  el.style.left = '0px'; el.style.top = '0px';
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const GAP = 12, PAD = 10;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let left = r.right + GAP, top = r.top - 4;
+  if (left + w > vw - PAD) {
+    const leftSide = r.left - GAP - w;
+    if (leftSide >= PAD) left = leftSide;
+    else {
+      left = r.left;
+      top = r.bottom + GAP;
+      if (top + h > vh - PAD) top = r.top - GAP - h;
+    }
+  }
+  el.style.left = Math.round(Math.max(PAD, Math.min(left, vw - w - PAD))) + 'px';
+  el.style.top = Math.round(Math.max(PAD, Math.min(top, vh - h - PAD))) + 'px';
+  el.style.visibility = '';
+}
+function _whCardHtml(opt, item, state, chosen, pinned) {
+  const yours = (chosen && String(chosen) === String(opt.letter)) ? `<span class="wh-yours">your answer</span>` : '';
+  const close = pinned ? `<button type="button" class="wh-close" data-wh-close aria-label="Close">✕</button>` : '';
+  const head =
+    `<div class="wh-head"><span class="wh-num">${escapeHtml(String(opt.letter))}</span>` +
+    `<span class="wh-word">${escapeHtml(opt.text || '')}</span>${yours}${close}</div>` +
+    (opt.correct
+      ? `<div class="wh-verdict ok">✓ This one is right</div>`
+      : `<div class="wh-verdict no">✗ This one does not work here</div>`);
+  if (state === 'loading') return head + `<div class="wh-load"><span class="wh-dots"><i></i><i></i><i></i></span>Looking this one up…</div>`;
+  if (state === 'off') return head + `<div class="wh-note">Word help needs the A.I. to be switched on for this account.</div>`;
+  if (!item) return head + `<div class="wh-note">No explanation came back for this option. Move away and hover it again to try once more.</div>`;
+  let body = '';
+  if (item.meaning) body += `<div class="wh-sec"><div class="wh-lab">What it means</div><div class="wh-txt">${escapeHtml(item.meaning)}</div></div>`;
+  if (item.why) body += `<div class="wh-sec"><div class="wh-lab">${opt.correct ? 'Why it fits' : 'Why it cannot be used here'}</div><div class="wh-txt">${escapeHtml(item.why)}</div></div>`;
+  return head + body;
+}
+async function _whOpen(lab, containerSel, blockId, pin) {
+  const mcq = (_openMcqStore[containerSel] || []).find(m => m.blockId === blockId);
+  if (!mcq) return;
+  const letter = String(lab.dataset.whLetter || '');
+  const opt = (mcq.options || []).find(o => String(o.letter) === letter);
+  if (!opt) return;
+  // The armed class is the gate, checked HERE rather than by unbinding the
+  // listeners, because it is the one place all three ways in — hover, tap and
+  // keyboard — have to pass. `whDisarm` takes the badges away but a listener
+  // bound to a <label> cannot be removed without keeping a handle on every
+  // closure, and a reset question that still answers to a hover is precisely
+  // the open-book retry the disarm exists to prevent.
+  const wrap = lab.closest('.mcq-block');
+  if (!wrap || !wrap.classList.contains('wh-on')) return;
+  const chosen = wrap.dataset.whChosen || '';
+  const token = _whToken(containerSel, blockId, letter);
+  _whShowing = token;
+  _whPinned = !!pin;
+  const aiOn = !!(window.__aiReady && window.__aiReady());
+  const el = _whCardEl();
+  el.classList.toggle('wh-pinned', !!pin);
+  el.innerHTML = _whCardHtml(opt, null, aiOn ? 'loading' : 'off', chosen, !!pin);
+  el.style.display = 'block';
+  el.scrollTop = 0;
+  _whPlace(lab);
+  if (!aiOn) return;
+  let map = null;
+  try { map = await _whLoad(containerSel, mcq); } catch (e) { map = null; }
+  if (_whShowing !== token) return;   // the student has moved on — never overwrite a newer card
+  const item = map ? map[letter] : null;
+  el.innerHTML = _whCardHtml(opt, item, item ? 'ready' : 'none', chosen, _whPinned);
+  _whPlace(lab);
+}
+function _whQueue(lab, containerSel, blockId, pin) {
+  clearTimeout(_whTimer); clearTimeout(_whHideTimer);
+  if (pin) { _whOpen(lab, containerSel, blockId, true); return; }
+  _whTimer = setTimeout(() => _whOpen(lab, containerSel, blockId, false), WH_HOVER_MS);
+}
+function _whToggle(lab, containerSel, blockId) {
+  if (_whPinned && _whShowing === _whToken(containerSel, blockId, String(lab.dataset.whLetter || ''))) { _whHide(); return; }
+  _whQueue(lab, containerSel, blockId, true);
+}
+// Called from _mcqPaintResult and nowhere else — see the rules at the top.
+function whArm(containerSel, blockId, options, chosenLetter) {
+  const wrap = document.querySelector(containerSel + ' .mcq-block[data-block="' + blockId + '"]');
+  if (!wrap) return;
+  wrap.dataset.whChosen = chosenLetter || '';
+  if (!_whHasWords(options)) return;
+  wrap.classList.add('wh-on');
+  wrap.querySelectorAll('label').forEach((lab, idx) => {
+    const o = (options || [])[idx];
+    if (!o) return;
+    lab.dataset.whLetter = String(o.letter);
+    if (lab.dataset.whBound !== '1') {
+      lab.dataset.whBound = '1';
+      lab.addEventListener('mouseenter', () => { if (!_whCoarsePointer()) _whQueue(lab, containerSel, blockId, false); });
+      lab.addEventListener('mouseleave', () => { clearTimeout(_whTimer); if (!_whPinned) _whHideSoon(); });
+    }
+    if (lab.querySelector('.wh-badge')) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'wh-badge';
+    b.textContent = 'ⓘ';
+    b.title = 'What does this option mean — and why does it fit, or not?';
+    b.setAttribute('aria-label', 'Explain option ' + o.letter);
+    // The badge sits INSIDE the <label>, so a plain click would also tick the
+    // radio: reading an option would silently change the answer. preventDefault
+    // on the click is what stops that, and on the mousedown is what stops the
+    // pointer focusing the badge — the focus handler is for the keyboard, and
+    // firing it here would open the card and the click would close it again.
+    b.addEventListener('mousedown', ev => ev.preventDefault());
+    b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); _whToggle(lab, containerSel, blockId); });
+    b.addEventListener('focus', () => _whQueue(lab, containerSel, blockId, true));
+    b.addEventListener('blur', () => { if (_whPinned) _whHide(); });
+    lab.appendChild(b);
+  });
+}
+function whDisarm(wrap) {
+  if (!wrap) return;
+  wrap.classList.remove('wh-on');
+  delete wrap.dataset.whChosen;
+  wrap.querySelectorAll('.wh-badge').forEach(b => b.remove());
+  _whHide();
+}
+
+// The ONE painter for a marked MCQ. All three marking paths — whole-question
+// marking, the local per-part mark and the AI per-part mark — carried their own
+// copy of this loop, which is exactly how the word-help popout would have ended
+// up armed on two surfaces out of three and mysteriously missing on the third.
+function _mcqPaintResult(containerSel, blockId, options, chosenLetter) {
+  const wrap = document.querySelector(containerSel + ' .mcq-block[data-block="' + blockId + '"]');
+  if (!wrap) return;
+  wrap.querySelectorAll('label').forEach((lab, idx) => {
+    const o = (options || [])[idx];
+    if (!o) return;
+    lab.style.background = ''; lab.style.borderColor = 'var(--border)';
+    if (o.correct) { lab.style.background = '#dcfce7'; lab.style.borderColor = '#16a34a'; }
+    if (chosenLetter && o.letter === chosenLetter && !o.correct) { lab.style.background = '#fee2e2'; lab.style.borderColor = '#dc2626'; }
+  });
+  whArm(containerSel, blockId, options, chosenLetter);
 }
 
 // Last-resort explanation built locally, used when the AI returns nothing so
@@ -20262,15 +20593,7 @@ async function markOpenAnswersIn(containerSel, q, opts = {}) {
       const chosenLetter = (v && v.chosen) ? _normMcqChoice(v.chosen) : e.studentLetter;
       e.chosenLetter = chosenLetter;
       if (verdict !== 'correct') mistakes.push({ expected: correctOpt ? (correctOpt.letter + ') ' + correctOpt.text) : '', student: chosenLetter });
-      const wrap = document.querySelector(containerSel + ' .mcq-block[data-block="' + m.blockId + '"]');
-      if (wrap) {
-        wrap.querySelectorAll('label').forEach((lab, idx) => {
-          const o = m.options[idx]; if (!o) return;
-          lab.style.background = ''; lab.style.borderColor = 'var(--border)';
-          if (o.correct) { lab.style.background = '#dcfce7'; lab.style.borderColor = '#16a34a'; }
-          if (chosenLetter && o.letter === chosenLetter && !o.correct) { lab.style.background = '#fee2e2'; lab.style.borderColor = '#dc2626'; }
-        });
-      }
+      _mcqPaintResult(containerSel, m.blockId, m.options, chosenLetter);
       const fb = document.querySelector(containerSel + ' [data-mcq-fb="' + m.blockId + '"]');
       if (fb) {
         let inner = fbHead + (chosenLetter ? `<span style="color:var(--text-muted);font-size:0.85rem;"> (you chose ${escapeHtml(chosenLetter)})</span>` : '');
@@ -20493,13 +20816,7 @@ async function markQuestionPart(containerSel, kind, pid, btn) {
     const pts = verdict === 'correct' ? 1 : 0;
     const color = verdict === 'correct' ? 'var(--primary)' : 'var(--accent-red)';
     const icon = verdict === 'correct' ? '✓' : '✗';
-    const wrap = document.querySelector(containerSel + ' .mcq-block[data-block="' + pid + '"]');
-    if (wrap) wrap.querySelectorAll('label').forEach((lab, idx) => {
-      const o = mcq.options[idx]; if (!o) return;
-      lab.style.background = ''; lab.style.borderColor = 'var(--border)';
-      if (o.correct) { lab.style.background = '#dcfce7'; lab.style.borderColor = '#16a34a'; }
-      if (studentLetter && o.letter === studentLetter && !o.correct) { lab.style.background = '#fee2e2'; lab.style.borderColor = '#dc2626'; }
-    });
+    _mcqPaintResult(containerSel, pid, mcq.options, studentLetter);
     if (fbEl) {
       let inner = `<span style="color:${color};font-weight:600;font-size:0.85rem;text-transform:capitalize;">${icon} ${escapeHtml(verdict)}</span>` +
         (studentLetter ? `<span style="color:var(--text-muted);font-size:0.85rem;"> (you chose ${escapeHtml(studentLetter)})</span>` : '');
@@ -20575,15 +20892,7 @@ async function markQuestionPart(containerSel, kind, pid, btn) {
     _setPartResult(containerSel, 'open:' + pid, verdict, pts, model, student);
   } else {
     const chosenLetter = parsed.chosen ? _normMcqChoice(parsed.chosen) : studentLetter;
-    const wrap = document.querySelector(containerSel + ' .mcq-block[data-block="' + pid + '"]');
-    if (wrap) {
-      wrap.querySelectorAll('label').forEach((lab, idx) => {
-        const o = mcq.options[idx]; if (!o) return;
-        lab.style.background = ''; lab.style.borderColor = 'var(--border)';
-        if (o.correct) { lab.style.background = '#dcfce7'; lab.style.borderColor = '#16a34a'; }
-        if (chosenLetter && o.letter === chosenLetter && !o.correct) { lab.style.background = '#fee2e2'; lab.style.borderColor = '#dc2626'; }
-      });
-    }
+    _mcqPaintResult(containerSel, pid, mcq.options, chosenLetter);
     if (fbEl) {
       let inner = fbHead + (chosenLetter ? `<span style="color:var(--text-muted);font-size:0.85rem;"> (you chose ${escapeHtml(chosenLetter)})</span>` : '');
       if (correctOpt) inner += `<div style="margin-top:4px;font-size:0.82rem;color:var(--primary);"><strong>Correct answer:</strong> ${escapeHtml(correctOpt.letter)}) ${escapeHtml(correctOpt.text)}</div>`;
