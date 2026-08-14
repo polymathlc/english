@@ -283,6 +283,43 @@ The student drags a word into a blank and it is struck off.
   rendering prints a draggable word bank over a passage of drop targets.
 - Run **`node tools/passage-cloze-tests.mjs`** after touching any of it.
 
+## ✍️ Synthesis & transformation (`sy*`, block type `synthesis`)
+
+The last section of the paper: one or two sentences, a word the student must
+use, and ONE rewritten sentence meaning exactly the same thing. *"We admire Mr
+Kwan. He is our local football player." + "whom"*.
+
+**It is marked by the AI as one whole sentence, and that is the design
+constraint.** There is no marking a rewrite in pieces — the meaning lives in the
+arrangement, so a clause correct on its own can still be the wrong answer, and a
+sentence differing from the model answer word for word can still be right. The
+student writes into ONE box and the marker receives ONE string.
+
+- **It hangs off the EXISTING open-answer plumbing rather than growing its own.**
+  It renders an `.open-answer` inside an `.open-answer-section` and registers one
+  item in `items`, exactly as `_openSection` does, so every marking path, the
+  score, the mistake log, the photo-of-your-page route and `_checkAllPartsMarked`
+  cover it without knowing it exists. **Do not add a second marking path.**
+- **`syRubric` is the ONE place the marker is told what "correct" means**, and it
+  travels on `item.rubric` into both marking prompts. Without it the model falls
+  back to comparing wording against the model answer and fails every valid
+  rewrite phrased differently — which is most of them. Both prompts say a rubric
+  OVERRIDES the default "compare by meaning" instruction for that item.
+- **`_openAnswerText(el)` is the ONE place an answer is read from a box**, and
+  both marking paths call it. When the paper GIVES the opening ("This plot of
+  corn ______") that opening is *printed beside* the box, not typed into it, so
+  it is put back before marking — otherwise the marker gets a fragment and marks
+  a perfect answer as not a sentence. An empty box stays empty: the prefix alone
+  is never an answer.
+- `cuePos` is `'use'` (printed at the end of the rule, the sentence must contain
+  it) or `'start'` (the given opening). Only `'start'` writes a `data-prefix`.
+- **`QPART_OPENER_TYPES` gained `'synthesis'`** — the block carries its own
+  question wording, so labelling it is honest on the printed page.
+- **Both print builders carry an explicit `case 'synthesis'`**, for `fillblank`'s
+  reason: the read-only rendering shows the model answer, which on a worksheet
+  is the whole question given away.
+- Run **`node tools/synthesis-tests.mjs`** after touching any of it.
+
 ## Word & grammar help on a marked question's options
 
 `wh*` (in `app.js`, search `WORD & GRAMMAR HELP`). Once a multiple-choice
@@ -712,7 +749,7 @@ reported in chat, to know whether the deploy actually went through.
   named constant used at every call site rather than a string typed out in three
   places, and swapping the model means checking its scale first. The Science app
   (`polymathlc/cer`) carries the same pair — keep the two in step.
-- Run the nine harnesses after touching what they cover — every failure they
+- Run the ten harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
@@ -732,6 +769,10 @@ reported in chat, to know whether the deploy actually went through.
     is about. Line them up wrong and the popout still opens, still looks right
     and still reads fluently, while telling a child that "reluctantly" cannot be
     used because it is an adjective.
+  - `node tools/synthesis-tests.mjs` — the rubric the sentence-rewrite marker
+    is given, and the printed opening being put back before marking. Lose the
+    rubric and a correct rewrite worded differently from the model answer is
+    marked wrong; lose the prefix and the marker judges a fragment.
   - `node tools/ai-parts-tests.mjs` — the `"part"` the AI puts on a block, and
     that the typed-marker pass leaves it alone. Drop it and a comprehension page
     is eight option lists in a row with nothing telling them apart, on a screen

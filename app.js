@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.8.0';
+const APP_VERSION = 'v1.9.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -3230,6 +3230,16 @@ function createBlock(type) {
       // Paragraph text; blanked answers are wrapped in [[double brackets]].
       block.text = '';
       break;
+    case 'synthesis':
+      // "We admire Mr Kwan. He is our local football player." + "whom" → one
+      // rewritten sentence meaning exactly the same thing.
+      block.given = '';
+      block.cue = '';
+      block.cuePos = 'use';     // 'use' → printed at the end of the rule; 'start' → the given opening
+      block.answer = '';
+      block.marks = SY_MARKS_DEFAULT;
+      block.lines = SY_LINES_DEFAULT;
+      break;
     case 'clozebank':
       // Same [[double bracket]] markup as fillblank — one syntax for blanking a
       // word — plus the bank the student picks from and the paper's numbering.
@@ -4380,6 +4390,7 @@ function renderBlocks() {
       case 'openLines':   badgeClass = 'plainanswer-badge'; badgeIcon = '✍️'; badgeLabel = 'Open-Ended Answer'; break;
       case 'fillblank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔲'; badgeLabel = 'Fill in the Blanks'; break;
       case 'clozebank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔤'; badgeLabel = 'Comprehension Cloze (word bank)'; break;
+      case 'synthesis':   badgeClass = 'plainanswer-badge'; badgeIcon = '✍️'; badgeLabel = 'Synthesis & Transformation'; break;
       case 'workingSpace':badgeClass = 'plainanswer-badge'; badgeIcon = block.annotate ? '✍️' : '🧮'; badgeLabel = block.annotate ? 'Annotation Working Area' : 'Working Space'; break;
       case 'commonMistake':badgeClass = 'explanation-badge'; badgeIcon = '⚠️'; badgeLabel = 'Common Mistake'; break;
       case 'studentAnswer':badgeClass = 'explanation-badge'; badgeIcon = '🧑‍🎓'; badgeLabel = 'Student Answer'; break;
@@ -5410,6 +5421,44 @@ function renderImportedBlockEditorBody(block) {
           <div style="font-size:0.78rem;color:var(--text-muted);margin:12px 0 4px;">Student preview:</div>
           <div id="fbPrev_${id}" class="fb-preview">${_fbPreviewHtml(block.text || '')}</div>
         </div>`;
+    case 'synthesis': {
+      const start = syStartsWith(block);
+      return `
+        <div class="block-body">
+          <label class="sy-ed-label" for="syGiven_${id}">The sentence(s) given <span>— exactly as the paper prints them</span></label>
+          <textarea id="syGiven_${id}" class="form-input" rows="2" placeholder="We admire Mr Kwan. He is our local football player."
+                    style="width:100%;box-sizing:border-box;font-family:inherit;font-size:0.92rem;line-height:1.6;resize:vertical;"
+                    oninput="saveBlockField('${id}','given',this.value); sySyncEditor('${id}')">${escapeHtml(block.given || '')}</textarea>
+
+          <div class="sy-ed-row">
+            <label class="sy-ed-label" style="flex:1;min-width:220px;margin:0;">Word(s) provided
+              <input class="form-input" type="text" placeholder="whom" style="margin-top:6px;"
+                     value="${escapeHtml(block.cue || '')}" oninput="saveBlockField('${id}','cue',this.value); sySyncEditor('${id}')"></label>
+            <label class="sy-ed-label" style="min-width:210px;margin:0;">Where it is printed
+              <select class="form-input" style="margin-top:6px;" onchange="saveBlockField('${id}','cuePos',this.value); sySyncEditor('${id}')">
+                <option value="use"${start ? '' : ' selected'}>At the end of the rule — the sentence must use it</option>
+                <option value="start"${start ? ' selected' : ''}>At the start — it is the given opening</option>
+              </select></label>
+            <label class="sy-ed-label" style="width:110px;margin:0;">Marks
+              <input class="form-input" type="number" min="1" max="20" style="margin-top:6px;"
+                     value="${syMarks(block)}" oninput="saveBlockNum('${id}','marks',this.value,1,20); sySyncEditor('${id}')"></label>
+            <label class="sy-ed-label" style="width:130px;margin:0;">Printed lines
+              <input class="form-input" type="number" min="1" max="${SY_LINES_MAX}" style="margin-top:6px;"
+                     value="${syLines(block)}" oninput="saveBlockNum('${id}','lines',this.value,1,${SY_LINES_MAX})"></label>
+          </div>
+
+          <label class="sy-ed-label" for="syAns_${id}" style="margin-top:14px;">Model answer <span>— one sentence. The AI marks on MEANING, so a student's different wording is still right.</span></label>
+          <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:4px;">
+            <button class="btn btn-outline" type="button" style="padding:5px 12px;font-size:0.8rem;" onclick="syAiAnswer('${id}', this)">🤖 Write it for me</button>
+          </div>
+          <textarea id="syAns_${id}" class="form-input" rows="2" placeholder="Mr Kwan, whom we admire, is our local football player."
+                    style="width:100%;box-sizing:border-box;font-family:inherit;font-size:0.92rem;line-height:1.6;resize:vertical;"
+                    oninput="saveBlockField('${id}','answer',this.value); sySyncEditor('${id}')">${escapeHtml(block.answer || '')}</textarea>
+
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:14px 0 4px;">Student preview:</div>
+          <div id="syPrev_${id}" class="sy-ed-prev">${_syEditorPreviewHtml(block)}</div>
+        </div>`;
+    }
     case 'clozebank': {
       const blanks = _cbBlanks(block);
       const bank = cbBank(block);
@@ -5557,6 +5606,12 @@ function renderImportedBlockStudent(block, q) {
       return `<div class="ws-working" style="margin:10px 0;border:1px dashed #c4c4c4;border-radius:8px;height:${_wsBlockLines(block.lines, 6) * 26}px;"></div>`;
     case 'fillblank':
       return _fbHasBlanks(block) ? `<div style="margin:10px 0;">${_fbReadonlyHtml(block)}</div>` : `<div class="fb-sentence" style="line-height:2;margin:10px 0;">${escapeHtml(block.text || '')}</div>`;
+    case 'synthesis':
+      if (!syReady(block)) return '';
+      return `<div class="sy-block sy-readonly" style="margin:10px 0;">
+        <div class="sy-given">${escapeHtmlKeepLines(syGiven(block))}</div>
+        <div class="sy-meta">${syCue(block) ? `<span class="sy-cue-chip">${syStartsWith(block) ? 'Begin with' : 'Must use'}: <b>${escapeHtml(syCue(block))}</b></span>` : ''}<span class="sy-marks">${syMarks(block)} mark${syMarks(block) === 1 ? '' : 's'}</span></div>
+        ${syAnswer(block) ? `<div class="sy-model"><b>Answer:</b> ${escapeHtml(syAnswer(block))}</div>` : ''}</div>`;
     // A REVIEW rendering, with the answers in their slots — the same shape as
     // fillblank's above, and the same reason both print builders carry an
     // explicit case rather than falling through to it.
@@ -8828,6 +8883,22 @@ function buildBlocksFromAi(data) {
       } else if (t === 'explanation') {
         const expl = stripBrackets(b.text || b.content);
         if (expl) blocks.push({ id: generateBlockId(), type: 'explanation', content: expl });
+      } else if (t === 'synthesis') {
+        // The whole question lives on the block: the sentence(s) given, the word
+        // provided and where it is printed, and the rewrite it should produce.
+        const given = stripBrackets(b.given || b.text || b.content);
+        if (given) {
+          const marks = Number(b.marks);
+          blocks.push({
+            id: generateBlockId(), type: 'synthesis',
+            given,
+            cue: stripBrackets(b.cue || b.word || b.given_word),
+            cuePos: String(b.cuePos || b.cuePosition || 'use').toLowerCase() === 'start' ? 'start' : 'use',
+            answer: stripBrackets(b.answer || b.model || ''),
+            marks: (isFinite(marks) && marks >= 1 && marks <= 20) ? Math.round(marks) : SY_MARKS_DEFAULT,
+            lines: SY_LINES_DEFAULT
+          });
+        }
       }
       // An explicit part from the AI, stamped on whatever this entry built.
       //
@@ -9412,6 +9483,9 @@ function _partsPromptRules() {
     `- If the passage TEXT carries markers tied to those questions — an underlined word followed by "(16)", a numbered blank "(26)" — rewrite each marker to the LETTER of the question it belongs to, so "(16)" becomes "(a)" when question 16 is the first one. The marker and its question must always agree.\n` +
     `- Where such a question has wording of its own, put it in a "text" block carrying the SAME "part", directly above the block that answers it. The shared instruction line above the passage ("For each question from 21 to 28, four options are given…") gets NO "part" at all — and drop the paper's question range from it, since the questions are now lettered.\n` +
     `- A poster, infographic, advertisement or illustrated article used as the passage is ONE "image" block with the rectangle drawn around the WHOLE of it. Do not transcribe it into text and do not cut it into pieces.\n` +
+    `- SYNTHESIS & TRANSFORMATION — a section that says "rewrite the given sentence(s) using the word(s) provided", where each question shows one or two sentences, then ruled lines with a word printed at one end of the first rule. Use a {"type":"synthesis"} block for EACH of those questions, never a "text" plus an answer block:\n` +
+    `    {"type":"synthesis","part":"a","given":"We admire Mr Kwan. He is our local football player.","cue":"whom","cuePos":"use","answer":"Mr Kwan, whom we admire, is our local football player.","marks":2}\n` +
+    `  "given" is the sentence(s) printed above the rules, copied exactly. "cue" is the word or words printed ON the rules. "cuePos" is "start" when that word is printed at the START of the first rule (it is the given opening of the answer, e.g. "This plot of corn ______") and "use" when it is printed at the END of a rule (the sentence merely has to contain it, e.g. "______ whom"). "answer" is the correct rewrite, which you work out yourself — ONE sentence meaning exactly the same as "given", using the word provided. Letter these parts (a), (b), (c) like any others.\n` +
     `- Give EACH part its own answer block ("answer" or "plainanswer") directly under the text block that asks it, so every part has its own model answer.\n` +
     `- EXPLANATIONS follow the parts: a question with NO parts finishes with ONE "explanation" block; a question WITH parts gets ONE explanation block PER PART, placed directly after that part's own answer block and explaining ONLY that part's question and answer. Never write one explanation covering several parts, and never put an explanation about part (b) underneath part (a).\n`;
 }
@@ -11516,6 +11590,9 @@ function getQuestionPreview(q) {
     if (block.type === 'fillblank' && (block.text || '').trim()) {
       return clean('Fill in the blanks: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
     }
+    if (block.type === 'synthesis' && syGiven(block)) {
+      return clean('Rewrite: ' + syGiven(block)).substring(0, 150);
+    }
     if (block.type === 'clozebank' && (block.text || '').trim()) {
       return clean('Cloze: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
     }
@@ -12903,7 +12980,7 @@ function qPartNext(blocks) {
 // inventing an empty one to carry it puts a blank line on the paper. The
 // objection above does not apply, because both print paths and buildOpenBody
 // print the label for an MCQ that opens a part, exactly as they do for text.
-const QPART_OPENER_TYPES = ['text', 'mcq'];
+const QPART_OPENER_TYPES = ['text', 'mcq', 'synthesis'];
 // The compact "Part" control in a block's header. Shown on opener blocks; on
 // everything else the header shows which part the block INHERITS, so it is
 // obvious at a glance where each answer box will be filed on the answer key.
@@ -13520,6 +13597,11 @@ function _pushBlockAnswerKey(sections, block, part) {
     case 'answerLine':
       _pushAnswerKeySection(sections, stripHtml(block.label || '').trim() || 'Answer', block.answer, part);
       break;
+    case 'synthesis': {
+      const cue = syCue(block);
+      _pushAnswerKeySection(sections, 'Rewrite' + (cue ? ' (' + stripHtml(cue) + ')' : ''), escapeHtml(syAnswer(block)), part);
+      break;
+    }
     case 'answerKey': {
       const words = sanitizeAnswerKeyHtml(block.text || '');
       const url = String(block.url || '').trim();
@@ -13734,6 +13816,18 @@ function doPrintWorksheetOpen() {
         }
         // Same reason, and the same trap one step worse: the student rendering
         // of a cloze is a draggable word bank over a passage of drop targets.
+        // Explicit for the same reason fillblank is: the read-only rendering
+        // prints the model answer, which on a worksheet is the whole question
+        // given away.
+        case 'synthesis': {
+          if (syReady(block)) {
+            const ownS = qPartNormalize(block.part);
+            if (ownS && qPartLabelFirst(q.blocks, block)) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownS))}</span></div>`;
+            qHtml += syPrintHtml(block);
+            _pushBlockAnswerKey(qSections, block, bPart);
+          }
+          break;
+        }
         case 'clozebank': {
           if (cbHasBlanks(block)) {
             qHtml += cbPrintHtml(block);
@@ -19618,6 +19712,18 @@ function buildOpenBody(q, containerSel, markCfg) {
         );
         break;
       }
+      case 'synthesis': {
+        if (!syReady(block)) break;
+        // Its own card, like a numbered sub-question: five rewrites in a row
+        // otherwise run together into one wall of boxes.
+        const syPart = qBlockOpensPart(block);
+        if (cur && cur.hasAnswer) cur = null;
+        addAnswer(
+          (syPart && qPartLabelFirst(q.blocks, block) ? _qpTextHtml(syPart, '') : '') +
+          syStudentHtml(items, block, containerSel, pLab)
+        );
+        break;
+      }
       case 'clozebank': {
         // Each blank is an ITEM, exactly as fill-in-the-blank registers its
         // own, so the score, the mistake log and "have all the parts been
@@ -20824,6 +20930,201 @@ function cbAnswerKeyText(block) {
 }
 
 // =====================================================================
+// ✍️ SYNTHESIS & TRANSFORMATION — rewrite the sentence(s) using the word given
+// =====================================================================
+// The last section of the paper: one or two sentences, a word or phrase the
+// student must use, and one rewritten sentence that has to mean exactly the
+// same thing. "We admire Mr Kwan. He is our local football player." + "whom"
+// → "Mr Kwan, whom we admire, is our local football player."
+//
+// It is marked BY THE AI AS ONE WHOLE SENTENCE, and that is the whole design
+// constraint. There is no marking a rewrite in pieces: the meaning lives in the
+// arrangement, so a clause that is correct on its own can still be the wrong
+// answer, and a sentence that differs from the model answer word for word can
+// still be perfectly right. So the student writes into ONE box and the marker
+// receives ONE string.
+//
+// Which is why it hangs off the EXISTING open-answer plumbing rather than
+// growing its own: it renders an `.open-answer` inside an `.open-answer-section`
+// and registers one item in `items`, exactly as `_openSection` does. Every
+// marking path, the score, the mistake log, the photo-of-your-page route and
+// "have all the parts been marked?" therefore cover it without knowing it
+// exists — and there is no second marking path to keep in step.
+//
+// Two things it does need from that plumbing, both threaded through the ONE
+// item it registers:
+//
+//  • **`rubric`** — what "correct" means here. Without it the marker compares
+//    the student's wording to the model answer and fails every valid rewrite
+//    that happens to be phrased differently, which is most of them.
+//  • **`data-prefix`** — when the paper GIVES the opening ("This plot of corn
+//    ______"), that opening is printed, not typed. The box holds only what the
+//    student wrote, so the prefix is put back before marking. `_openAnswerText`
+//    is the one place that happens, and both marking paths call it.
+const SY_MARKS_DEFAULT = 2;      // these are 2-mark questions; 10 marks over 5
+const SY_LINES_DEFAULT = 2;      // ruled lines on paper, as the paper prints
+const SY_LINES_MAX = 6;
+
+function syIsBlock(b) { return !!b && b.type === 'synthesis'; }
+function syGiven(b) { return String((b && b.given) || '').trim(); }
+function syCue(b) { return String((b && b.cue) || '').trim(); }
+function syAnswer(b) { return String((b && b.answer) || '').trim(); }
+// 'start' → the cue is the printed OPENING of the answer; 'use' → it is a word
+// the sentence has to contain, printed at the end of the rule as on the paper.
+function syStartsWith(b) { return String((b && b.cuePos) || 'use') === 'start'; }
+function syMarks(b) { const n = Number(b && b.marks); return (isFinite(n) && n >= 1 && n <= 20) ? Math.round(n) : SY_MARKS_DEFAULT; }
+function syLines(b) { const n = Number(b && b.lines); return (isFinite(n) && n >= 1) ? Math.min(SY_LINES_MAX, Math.round(n)) : SY_LINES_DEFAULT; }
+// A block with nothing given is not a question yet — no answer box, nothing to
+// mark, and nothing on the printed page but an empty rule.
+function syReady(b) { return syIsBlock(b) && !!syGiven(b); }
+// What the student's box is worth putting in front of the marker. The printed
+// opening is not in the box — it was given — so it is put back here, in the one
+// place both marking paths read an answer from.
+function _openAnswerText(el) {
+  if (!el) return '';
+  const typed = String(el.value == null ? '' : el.value).trim();
+  const pre = String((el.dataset && el.dataset.prefix) || '').trim();
+  if (!typed) return '';
+  return (pre ? pre + ' ' : '') + typed;
+}
+
+// The marking instruction, written once. Everything else about this question
+// type is layout; this is the part that decides whether a class is marked
+// fairly, so it says what "correct" means rather than leaving the marker to
+// infer it from a model answer it will otherwise treat as the only right words.
+function syRubric(block) {
+  const cue = syCue(block);
+  const start = syStartsWith(block);
+  return 'SENTENCE TRANSFORMATION. Mark the answer AS ONE WHOLE SENTENCE — never phrase by phrase, and never by how closely it matches the model answer\'s wording. '
+    + 'Award "correct" only if ALL of these hold: (1) it means exactly the same as the given sentence(s), with nothing added and nothing left out; '
+    + '(2) it is ONE grammatical sentence, correctly punctuated and spelled'
+    + (cue ? `; (3) it uses "${cue}"${start ? ' as its opening, exactly as given' : ''}, and uses it correctly` : '')
+    + '. Different wording from the model answer is FINE when the meaning and the grammar are right — there is more than one correct rewrite. '
+    + 'Use "partial" when the meaning survives but there is a grammar, tense, punctuation or agreement slip'
+    + (cue ? ', or when the given word is present but used awkwardly' : '')
+    + '. Use "incorrect" when the meaning changes, when it is not one sentence'
+    + (cue ? `, or when "${cue}" is missing altogether` : '') + '.';
+}
+
+// ---- the student's box ------------------------------------------------------
+// Registers ONE item and returns the section. Deliberately the same shape as
+// _openSection's output — `.open-answer-section` wrapping an `.open-answer`,
+// the part actions and an `.open-feedback` — because that is what every
+// marking path already looks for.
+function syStudentHtml(items, block, containerSel, partLabel) {
+  const oidx = items.length;
+  const cue = syCue(block);
+  const start = syStartsWith(block);
+  items.push({
+    label: [partLabel, 'Rewrite'].filter(Boolean).join(' ') || 'Rewrite',
+    model: syAnswer(block),
+    rubric: syRubric(block),
+    block, field: 'answer'
+  });
+  const prefix = (start && cue) ? cue : '';
+  const marks = syMarks(block);
+  return `<div class="open-answer-section sy-block" data-mic-wrap>
+      <div class="sy-given">${escapeHtmlKeepLines(syGiven(block))}</div>
+      <div class="sy-answer-row">
+        ${prefix ? `<span class="sy-cue-fixed">${escapeHtml(prefix)}</span>` : ''}
+        <textarea class="open-answer sy-input" data-oidx="${oidx}" rows="2"
+          ${prefix ? `data-prefix="${escapeHtml(prefix)}"` : ''}
+          placeholder="${prefix ? '…finish the sentence' : 'Write the whole sentence'}"></textarea>
+        ${micButtonHtml('', 'Speak your answer')}
+      </div>
+      <div class="sy-meta">
+        ${cue ? `<span class="sy-cue-chip">${start ? 'Begin with' : 'Must use'}: <b>${escapeHtml(cue)}</b></span>` : ''}
+        <span class="sy-marks">${marks} mark${marks === 1 ? '' : 's'}</span>
+        <span class="sy-hint">One sentence, same meaning.</span>
+      </div>
+      ${_partActionsHtml(containerSel, 'open', oidx)}
+      ${_adminAnswerToolHtml(containerSel, oidx, syAnswer(block))}
+      <div class="open-feedback" style="margin-top:4px;"></div>
+    </div>`;
+}
+
+// ---- on PAPER ---------------------------------------------------------------
+// Set as the paper sets it: the given sentence(s), then the ruled lines with the
+// word given printed in its place — at the START of the first rule when the
+// opening is given, at its END otherwise — and the marks box out to the right.
+function syPrintHtml(block) {
+  if (!syReady(block)) return '';
+  const cue = syCue(block);
+  const start = syStartsWith(block);
+  const n = syLines(block);
+  const rules = [];
+  for (let i = 0; i < n; i++) {
+    const last = i === n - 1;
+    if (i === 0 && start && cue) {
+      rules.push(`<div class="print-sy-line"><span class="print-sy-cue">${escapeHtml(cue)}</span><span class="print-sy-rule"></span></div>`);
+    } else if (i === 0 && cue) {
+      rules.push(`<div class="print-sy-line"><span class="print-sy-rule"></span><span class="print-sy-cue">${escapeHtml(cue)}</span></div>`);
+    } else {
+      rules.push(`<div class="print-sy-line"><span class="print-sy-rule"></span>${last ? '<span class="print-sy-stop">.</span>' : ''}</div>`);
+    }
+  }
+  return `<div class="print-sy">
+      <div class="print-sy-given">${escapeHtmlKeepLines(syGiven(block))}</div>
+      <div class="print-sy-body">
+        <div class="print-sy-lines">${rules.join('')}</div>
+        <div class="print-sy-box"></div>
+      </div>
+    </div>`;
+}
+
+// ---- the editor -------------------------------------------------------------
+// The preview is the page the class will get, minus the box to type in: the
+// given sentence(s), the word provided in its printed position, and the marks.
+function _syEditorPreviewHtml(block) {
+  if (!syReady(block)) return '<span style="color:var(--text-muted);font-size:0.82rem;">Type the sentence(s) above.</span>';
+  const cue = syCue(block), start = syStartsWith(block);
+  return `<div class="sy-block">
+      <div class="sy-given">${escapeHtmlKeepLines(syGiven(block))}</div>
+      <div class="sy-answer-row">
+        ${start && cue ? `<span class="sy-cue-fixed">${escapeHtml(cue)}</span>` : ''}
+        <span class="sy-rule"></span>
+        ${!start && cue ? `<span class="sy-cue-end">${escapeHtml(cue)}</span>` : ''}
+      </div>
+      <div class="sy-meta"><span class="sy-marks">${syMarks(block)} mark${syMarks(block) === 1 ? '' : 's'}</span>
+        ${syAnswer(block) ? `<span class="sy-hint">Answer: ${escapeHtml(syAnswer(block))}</span>` : '<span class="sy-hint" style="color:var(--accent-orange,#b7791f);">No model answer yet — the AI marks against it.</span>'}</div>
+    </div>`;
+}
+function sySyncEditor(id) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  const p = document.getElementById('syPrev_' + id);
+  if (p) p.innerHTML = _syEditorPreviewHtml(b);
+}
+// Write the model answer from the given sentence(s) and the word provided.
+// A rewrite has one right meaning and several right wordings, so this is a
+// draft for the author to read, exactly like every other ✨ button here.
+async function syAiAnswer(id, btn) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  if (!syGiven(b)) { showToast('Type the sentence(s) given first', 'info'); return; }
+  if (!window.__aiReady || !window.__aiReady()) { showToast("AI isn't set up yet", 'info'); return; }
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Writing…'; }
+  try {
+    const cue = syCue(b);
+    const prompt = `You are a Singapore primary-school English teacher writing the answer key for a synthesis & transformation question.\n\n` +
+      `GIVEN: ${syGiven(b)}\n` +
+      (cue ? `WORD(S) PROVIDED: "${cue}"${syStartsWith(b) ? ' — the answer must BEGIN with exactly this' : ' — the answer must use this'}\n` : '') +
+      `\nRewrite the given sentence(s) as ONE sentence that means exactly the same thing, adding nothing and leaving nothing out` +
+      (cue ? `, using "${cue}"` : '') + `. Keep it natural and grammatical, punctuated and capitalised properly.\n` +
+      `Return ONLY the sentence, nothing else — no quotes, no explanation.`;
+    const out = (await askGemini(prompt, { maxOutputTokens: 160, temperature: 0.2 }) || '').trim().replace(/^["']|["']$/g, '');
+    if (!out) throw new Error('nothing came back');
+    b.answer = out;
+    const ta = document.getElementById('syAns_' + id);
+    if (ta) ta.value = out;
+    sySyncEditor(id);
+    showToast('✍️ Model answer written — read it before you save', 'success');
+  } catch (e) {
+    showToast('Could not write it: ' + (e && e.message ? e.message : e), 'error');
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+}
+
+// =====================================================================
 // PHOTO ANSWER — one photo of the whole page of written answers, sent to the
 // AI so it can read the handwriting and mark each open-ended section.
 // =====================================================================
@@ -21384,7 +21685,9 @@ async function markOpenAnswersIn(containerSel, q, opts = {}) {
   const entries = [];
   areas.forEach(a => {
     const it = items[parseInt(a.dataset.oidx)] || { label: 'Answer', model: '' };
-    entries.push({ kind: 'open', label: it.label, model: it.model, student: a.value.trim(), areaEl: a });
+    // _openAnswerText, not a.value: a synthesis answer whose OPENING was given
+    // on the paper has that opening printed beside the box, not typed into it.
+    entries.push({ kind: 'open', label: it.label, model: it.model, rubric: it.rubric || '', student: _openAnswerText(a), areaEl: a });
   });
   mcqList.forEach(m => {
     const checked = document.querySelector(containerSel + ' input[name="mcq_' + m.blockId + '"]:checked');
@@ -21428,7 +21731,7 @@ async function markOpenAnswersIn(containerSel, q, opts = {}) {
     try {
       const list = aiEntries.map(({ e, i }) => {
         if (e.kind === 'open') {
-          return `${i}. [${e.label}] type=open expected="${e.model}" student="${e.student || (photo ? '(see attached photo)' : '(blank)')}"`;
+          return `${i}. [${e.label}] type=open${e.rubric ? ' rubric="' + e.rubric.replace(/"/g, "'") + '"' : ''} expected="${e.model}" student="${e.student || (photo ? '(see attached photo)' : '(blank)')}"`;
         }
         const opts = e.mcq.options.map(o => `${o.letter}) ${o.text}`).join(' | ');
         const correct = e.mcq.options.find(o => o.correct);
@@ -21442,6 +21745,7 @@ async function markOpenAnswersIn(containerSel, q, opts = {}) {
           ? `The student wrote their answers on paper and attached ONE photo of the whole page. Read the photo carefully and find the student's answer for EACH item below, matching by its label and order. For a multiple-choice item, work out which option number the student chose (a circled option, a written number or letter, or a tick) from the photo when they have not selected one on screen. Ignore handwriting quality.\n`
           : ``) +
         `For each OPEN item, compare the student's answer to the expected model answer by meaning (ignore wording, grammar and spelling — focus on the meaning); verdict "correct", "partial" or "incorrect". ` +
+        `An item carrying rubric="…" is marked BY THAT RUBRIC INSTEAD — it says what correct means for that item, and it overrides the sentence above for that item only. ` +
         `For each MULTIPLE-CHOICE item, decide which option the student chose and mark "correct" only if it matches the correct option number, otherwise "incorrect"; also include "chosen":"<the option number the student picked, or empty>". ` +
         `Give ONE short feedback sentence (max 22 words) addressed to the student for each item. ` +
         `Provide the full correct MODEL ANSWER for the whole question as "modelAnswer" — the ideal answer a student should give (use the expected answers if provided, otherwise generate the correct answer yourself; for multiple choice state the correct option and what it says). ` +
@@ -21691,14 +21995,15 @@ async function markQuestionPart(containerSel, kind, pid, btn) {
   const photo = _openPhoto[containerSel];
 
   let areaEl = null, fbEl = null, mcq = null, correctOpt = null;
-  let label = 'Answer', model = '', student = '', studentLetter = '';
+  let label = 'Answer', model = '', student = '', studentLetter = '', rubric = '';
   if (kind === 'open') {
     areaEl = document.querySelector(containerSel + ' .open-answer[data-oidx="' + pid + '"]');
     if (!areaEl) return;
     const it = (_openItemsStore[containerSel] || [])[parseInt(pid, 10)] || {};
     label = it.label || 'Answer';
     model = it.model || '';
-    student = areaEl.value.trim();
+    rubric = it.rubric || '';
+    student = _openAnswerText(areaEl);
     if (!student && !photo) { showToast('Type an answer for this part first — or attach a photo of your written work', 'info'); return; }
     const sec = areaEl.closest('.open-answer-section');
     fbEl = sec && sec.querySelector('.open-feedback');
@@ -21743,7 +22048,7 @@ async function markQuestionPart(containerSel, kind, pid, btn) {
   try {
     let item;
     if (kind === 'open') {
-      item = `Part: [${label}] type=open expected="${model || '(none provided — work out the correct answer from the question context)'}" student="${student || '(see attached photo)'}"`;
+      item = `Part: [${label}] type=open${rubric ? ' rubric="' + rubric.replace(/"/g, "'") + '"' : ''} expected="${model || '(none provided — work out the correct answer from the question context)'}" student="${student || '(see attached photo)'}"`;
     } else {
       const optsTxt = mcq.options.map(o => `${o.letter}) ${o.text}`).join(' | ');
       item = `Part: [Multiple choice] type=mcq options=[${optsTxt}] correct=${correctOpt ? correctOpt.letter : '?'} studentSelected="${studentLetter || '(read from photo)'}"`;
@@ -21757,6 +22062,7 @@ async function markQuestionPart(containerSel, kind, pid, btn) {
         : ``) +
       (kind === 'open'
         ? `Compare the student's answer to the expected model answer by meaning (ignore wording, grammar and spelling — focus on the meaning); verdict "correct", "partial" or "incorrect". `
+          + `If the part carries rubric="…", mark it BY THAT RUBRIC instead — it says what correct means here and it overrides the sentence above. `
         : `Decide which option the student chose and mark "correct" only if it matches the correct option number, otherwise "incorrect"; also include "chosen":"<the option number the student picked, or empty>". `) +
       `Give ONE short feedback sentence (max 22 words) addressed to the student. ` +
       `Provide the full correct answer for THIS part as "modelAnswer"${kind === 'mcq' ? ' (state the correct option number and what it says)' : ' (use the expected answer if provided, otherwise generate the correct answer yourself)'}. ` +
@@ -22441,7 +22747,7 @@ function questionHasMarkableAnswer(q) {
   // A fill-in-the-blank block counts only once it actually has blanks marked,
   // and a comprehension cloze the same — a passage with no [[word]] blanked is
   // just a paragraph, and offering "Try it" on one leads to a dead end.
-  if (((q && q.blocks) || []).some(b => _fbHasBlanks(b) || cbHasBlanks(b))) return true;
+  if (((q && q.blocks) || []).some(b => _fbHasBlanks(b) || cbHasBlanks(b) || syReady(b))) return true;
   return ((q && q.blocks) || []).some(b => b && ['answer', 'plainanswer', 'openLines', 'workingSpace', 'mcq'].includes(b.type));
 }
 
@@ -23210,6 +23516,15 @@ function buildWorksheetHtml(selected, worksheetTitle, opts) {
             }
             break;
           }
+          case 'synthesis': {
+            if (syReady(block)) {
+              const ownS = qPartNormalize(block.part);
+              if (ownS && qPartLabelFirst(q.blocks, block)) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownS))}</span></div>`;
+              qHtml += syPrintHtml(block);
+              _pushBlockAnswerKey(qSections, block, bPart);
+            }
+            break;
+          }
           case 'clozebank': {
             if (cbHasBlanks(block)) {
               qHtml += cbPrintHtml(block);
@@ -23934,6 +24249,7 @@ function _wsQeBlockSummary(b) {
     case 'workingSpace': return 'Working space';
     case 'answerLine': return 'Answer line';
     case 'fillblank': return 'Fill in the blanks';
+    case 'synthesis': return 'Rewrite the sentence' + (syCue(b) ? ' using "' + syCue(b) + '"' : '') + ' · ' + syMarks(b) + ' marks';
     case 'clozebank': return _cbBlanks(b).length + ' numbered blank' + (_cbBlanks(b).length === 1 ? '' : 's') + ' · '
       + cbBank(b).length + '-word bank';
     case 'explanation': return 'Explanation (answer key)';
@@ -28760,6 +29076,7 @@ function _docQParts(q) {
     else if (b.type === 'answer') { p.answers.push({ kind: 'cer', claim: stripHtml(b.claim || ''), evidence: stripHtml(b.evidence || ''), reasoning: stripHtml(b.reasoning || '') }); scanInline(b.claim); scanInline(b.evidence); scanInline(b.reasoning); }
     else if (b.type === 'plainanswer') { p.answers.push({ kind: 'plain', text: stripHtml(b.content || '') }); scanInline(b.content); }
     else if (b.type === 'fillblank') { const fp = _fbParse(b.text || ''); p.text += ' ' + fp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = fp.filter(x => x.type === 'blank').map(x => x.answer).join('; '); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
+    else if (b.type === 'synthesis') { p.text += ' ' + syGiven(b) + (syCue(b) ? ' [' + syCue(b) + ']' : ''); if (syAnswer(b)) p.answers.push({ kind: 'plain', text: syAnswer(b) }); }
     else if (b.type === 'clozebank') { const cp = _fbParse(b.text || ''); p.text += ' ' + cp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = cbAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
     else if (b.type === 'explanation') scanInline(b.content);
   });
@@ -29286,6 +29603,11 @@ function _cqRepr(q) {
       case 'plainanswer': lines.push('Model answer: ' + stripHtml(b.content || '')); break;
       case 'answerLine': lines.push('Answer line' + (b.label ? ' (' + stripHtml(b.label) + ')' : '') + ': ' + stripHtml(b.answer || '')); break;
       case 'fillblank': lines.push('Fill in the blanks: ' + stripHtml(b.text || '')); break;
+      case 'synthesis':
+        lines.push('Synthesis & transformation. Given: ' + syGiven(b)
+          + (syCue(b) ? '\nWord(s) provided' + (syStartsWith(b) ? ' as the opening' : '') + ': ' + syCue(b) : '')
+          + (syAnswer(b) ? '\nModel answer: ' + syAnswer(b) : ''));
+        break;
       case 'clozebank':
         lines.push('Comprehension cloze, blanks numbered from ' + _cbStart(b) + '. Word bank: '
           + cbBank(b).map((w, i) => '(' + CB_LETTERS[i] + ') ' + w).join(', ')
@@ -36115,6 +36437,8 @@ window.saveBlockFlag = saveBlockFlag;
 window.cbSyncEditor = cbSyncEditor;
 window.cbSetExtras = cbSetExtras;
 window.cbToggleToken = cbToggleToken;
+window.sySyncEditor = sySyncEditor;
+window.syAiAnswer = syAiAnswer;
 window.clearAllParts = clearAllParts;
 window.qPartScanBank = qPartScanBank;
 window.qPartAutoConvertInBackground = qPartAutoConvertInBackground;

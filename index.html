@@ -169,6 +169,28 @@
   .cb-ed-warn { font-size:0.8rem; color:#7a5410; background:#fdf4e3; border:1px solid #e0b768; border-radius:8px; padding:8px 12px; margin-bottom:10px; line-height:1.6; }
   .cb-ed-prev { border:1px solid var(--border); border-radius:12px; padding:18px 20px 26px; background:var(--surface-alt,#fafbfa); }
   .cb-ed-prev .cb-passage { line-height:2.8; }
+/* ---- ✍️ Synthesis & transformation — rewrite using the word given ---------
+   One box, because the AI marks the sentence as a whole. When the paper GIVES
+   the opening it is printed beside the box rather than typed into it, and
+   _openAnswerText puts it back before marking. */
+  .sy-block { border:1px solid var(--border); border-radius:12px; padding:16px 18px 14px; background:var(--surface,#fff); }
+  .sy-given { font-size:0.95rem; line-height:1.7; margin-bottom:14px; }
+  .sy-answer-row { display:flex; gap:9px; align-items:flex-start; flex-wrap:wrap; }
+  .sy-cue-fixed { flex:0 0 auto; padding:9px 2px; font-size:0.95rem; font-weight:600; line-height:1.5; white-space:nowrap; }
+  .sy-input { flex:1; min-width:220px; padding:10px; border:1px solid var(--border); border-radius:8px; font-family:inherit; font-size:0.95rem; line-height:1.5; resize:vertical; background:#fff; color:var(--text); }
+  .sy-meta { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:11px; }
+  .sy-cue-chip { font-size:0.78rem; line-height:1.5; color:var(--accent-blue,#2d6ca8); background:var(--accent-blue-light,#eaf1f8); border-radius:999px; padding:5px 12px; }
+  .sy-marks { font-size:0.72rem; font-weight:800; letter-spacing:0.05em; text-transform:uppercase; color:var(--text-muted); }
+  .sy-hint { font-size:0.79rem; color:var(--text-muted); line-height:1.6; }
+  .sy-model { font-size:0.88rem; line-height:1.7; margin-top:10px; color:var(--primary,#0b6b4f); }
+  /* The editor's preview draws the rules the paper prints. */
+  .sy-rule { flex:1; min-width:120px; border-bottom:1.5px solid var(--text); height:1.6em; }
+  .sy-cue-end { flex:0 0 auto; padding-top:0.35em; font-size:0.95rem; font-weight:600; white-space:nowrap; }
+  .sy-ed-label { display:block; font-size:0.85rem; font-weight:600; margin-bottom:7px; }
+  .sy-ed-label span { font-weight:400; color:var(--text-muted); }
+  .sy-ed-row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; margin-top:14px; }
+  .sy-ed-prev { border:1px solid var(--border); border-radius:12px; padding:16px 18px; background:var(--surface-alt,#fafbfa); }
+
 /* ---- 📑 The passage + sub-questions dialog --------------------------------
    `.confirm-dialog` is declared LATE and sets max-width:400px, padding and
    text-align:center — so this uses BOTH classes to override all three. */
@@ -3054,6 +3076,60 @@ option {
     color: #666;
     margin-top: 2pt;
     line-height: 1.2;
+  }
+
+  /* ✍️ Synthesis & transformation, set as the paper sets it: the sentence(s)
+     given, then ruled lines with the word provided printed in its place — at
+     the START of the first rule when the opening is given, at its END otherwise
+     — and the marks box out to the right. */
+  .print-sy {
+    margin: 6pt 0 10pt;
+  }
+  .print-sy-given {
+    font-size: 10.5pt;
+    line-height: 1.6;
+    margin-bottom: 8pt;
+  }
+  .print-sy-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 10pt;
+  }
+  .print-sy-lines {
+    flex: 1;
+    min-width: 0;
+  }
+  .print-sy-line {
+    display: flex;
+    align-items: flex-end;
+    gap: 6pt;
+    height: 22pt;
+  }
+  .print-sy-rule {
+    flex: 1;
+    border-bottom: 0.75pt solid #000;
+    height: 16pt;
+  }
+  .print-sy-cue {
+    flex: 0 0 auto;
+    font-size: 10.5pt;
+    font-weight: 600;
+    line-height: 1.2;
+    padding-bottom: 1pt;
+  }
+  .print-sy-stop {
+    flex: 0 0 auto;
+    font-size: 11pt;
+    line-height: 1;
+    padding-bottom: 1pt;
+  }
+  /* The teacher's mark box, as the paper draws it. */
+  .print-sy-box {
+    flex: 0 0 auto;
+    width: 26pt;
+    height: 26pt;
+    border: 0.75pt solid #000;
+    margin-top: 2pt;
   }
 
   /* 🔤 Comprehension cloze, set as the paper sets it: the instruction, a boxed
@@ -6590,6 +6666,10 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
             <button class="add-block-btn plainanswer-add" onclick="addBlock('clozebank')" title="One passage with numbered blanks and a lettered word bank above it. Students drag a word into each blank and it is struck off the list.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
               &#x1F524; Add Comprehension Cloze
+            </button>
+            <button class="add-block-btn plainanswer-add" onclick="addBlock('synthesis')" title="Synthesis &amp; transformation: one or two sentences, a word the student must use, and one rewritten sentence meaning the same thing. The AI marks the sentence as a whole.">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              &#x270D;&#xFE0F; Add Synthesis / Rewrite
             </button>
             <button class="add-block-btn text-add" onclick="pbOpen()" title="Paste a whole passage and the numbered option lists under it. They are added as ONE question, with each sub-question carrying the paper's own number as its part.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
