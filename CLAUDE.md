@@ -462,6 +462,15 @@ reported in chat, to know whether the deploy actually went through.
 - After editing `app.js`, validate it:
   `cp app.js /tmp/c.mjs && node --check /tmp/c.mjs` (the `.mjs` copy makes Node
   parse it as a module, so `import` at the top is accepted).
+- **The Gemini model is `AI_MODEL` and its thinking floor is `AI_THINK_MIN`, and
+  the two move TOGETHER** (v1.2.0). Every model has its own thinking scale, and a
+  level it does not know is a **400 INVALID_ARGUMENT on every AI call in the
+  app** — not a degraded answer, no answer at all. `gemini-3.7-flash` takes
+  `low` / `medium` / `high` and **dropped the `"minimal"` 3.6 accepted**, exactly
+  as 3.x had already dropped 2.x's numeric `thinkingBudget`. So the floor is a
+  named constant used at every call site rather than a string typed out in three
+  places, and swapping the model means checking its scale first. The Science app
+  (`polymathlc/cer`) carries the same pair — keep the two in step.
 - Run the four harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
