@@ -328,6 +328,63 @@ true.
   hand-typed passage and **only ever widens** a blank's list, never narrows it.
 - Run **`node tools/open-cloze-tests.mjs`** after touching any of it.
 
+### ✏️ The EDITING passage (`ed*`, block type `editpassage`) — v1.11.0
+
+The fourth member of the family and the one that reads backwards from a cloze:
+**nothing is missing.** Every word is there and about ten are wrong — "reseev"
+for receive, "choose" for chosen, "tropickle" for tropical — each underlined
+with a numbered box beside it for the correction.
+
+It is not a variant of a cloze for the same reason `clozebank` and `clozeopen`
+are not variants of each other: **what "correct" means is different.** A cloze
+blank has several right words; an editing item has ONE properly spelled,
+properly formed word. Mark one by the other's rules and a class is told
+"tropicle" is fine because it means the right thing.
+
+- **An item stores the printed word AND its corrections**, split on `>>`:
+  `[[reseev>>receive]]`, or `[[choose>>chosen|was chosen]]`. **`_edItem` is the
+  ONE place** that string is taken apart. Read the halves the wrong way round
+  and the correct spelling is printed on the page for the student to copy.
+- **No `>>` at all means the wrong word is marked but its correction is not
+  written yet** — which is exactly what clicking a word in the editor produces.
+  The bracketed text is the PRINTED word; the answer list is empty and the
+  passage decides.
+- **The printed word is NEVER a correct answer.** It is the error being
+  corrected, so `edIsTheError` decides it locally, before the AI is asked — a
+  model shown "reseev" against a passage that reads perfectly around it talks
+  itself into accepting it. `edAiCorrections` filters it out of the model's
+  reply too, and it holds even if an authoring slip lists it as the answer.
+- **Near misses are NOT accepted**, unlike the open cloze: this section tests
+  spelling, so "recieve" is wrong. The marking prompt says so explicitly.
+- The number sits **to the LEFT of the box**, inline, as the paper prints it —
+  not hung underneath as the clozes hang theirs. A cloze blank is a thin rule
+  with room under it; this box has a border and a height, so a number below it
+  lands in the middle of the next line of the passage.
+- **`_coText`, not `escapeHtmlKeepLines`**, renders the passage in all three
+  cloze-family block types. That helper TRIMS every line, and a passage is split
+  at each blank — so the text resuming after one always begins with the space
+  that separated it from the word before, and trimmed away every blank is jammed
+  against the next word, in all three renderings and on paper.
+- Run **`node tools/editing-passage-tests.mjs`** after touching any of it.
+
+### Reading these off a SCREENSHOT
+
+All four are built by **`buildBlocksFromAi`** from rules in
+**`_partsPromptRules()`** — one fragment, carried by all four build prompts.
+`clozebank` gained its arm in v1.11.0: the block type had existed since v1.6.0
+with **no way to build one but typing the whole passage by hand**.
+
+- **Never run a passage through `stripBrackets`.** It exists to pull `[[ ]]` out
+  of a model answer; on any of these it erases every blank or item, leaving a
+  paragraph that renders and prints perfectly and asks the student nothing.
+- **`clozebank`'s bank is DERIVED** (`cbBank` = the answers + the distractors),
+  so the model supplies only `extras` — a flat array of strings, because
+  Firestore rejects a nested array and `_firestoreSafeQuestion` only rescues the
+  table block's rows. A bank missing one of its own answers stays unauthorable.
+- **An editing passage's wrong words must be transcribed VERBATIM**, misspelling
+  and all. A model that "helpfully" corrects them as it reads destroys the
+  question while leaving a passage that looks perfect.
+
 ## ✍️ Synthesis & transformation (`sy*`, block type `synthesis`)
 
 The last section of the paper: one or two sentences, a word the student must
@@ -871,6 +928,11 @@ reported in chat, to know whether the deploy actually went through.
     one line early swallows the first option list; a question number read off a
     quantity cuts the passage in half; a bank that does not contain one of its
     own answers renders and prints perfectly and is unanswerable.
+  - `node tools/editing-passage-tests.mjs` — the editing passage's
+    `[[wrong>>right]]` split, the rule that the printed word is never a correct
+    answer, and the screenshot path into the drag-and-drop cloze. Read the split
+    backwards and the correct spelling is printed for the student to copy; let
+    the printed word count as an edit and copying the error out earns the mark.
   - `node tools/open-cloze-tests.mjs` — the open cloze's accepted-answer list,
     what is marked right without the AI, and the passage the marker is sent.
     Drop an alternative and the word is marked wrong while the key still lists

@@ -201,6 +201,42 @@
   .co-fb-list { display:flex; flex-direction:column; gap:5px; margin-top:9px; font-size:0.85rem; color:var(--text); line-height:1.6; }
   .co-fb-alt { color:var(--text-muted); }
   .co-fb-why { color:var(--text-muted); font-style:italic; }
+
+/* ---- ✏️ Editing passage — the underlined word is wrong, write the correction
+   Nothing is missing here, so the ERROR stays on the page, underlined as the
+   paper underlines it, with its numbered box beside it. */
+  .ed-intro { font-size:0.9rem; line-height:1.7; margin-bottom:18px; }
+  .ed-passage { font-size:0.96rem; line-height:2.9; text-align:justify; }
+  .ed-item { display:inline-block; white-space:nowrap; }
+  .ed-wrong { text-decoration:underline; text-decoration-thickness:1.5px; text-underline-offset:3px; margin-right:7px; }
+  .ed-input {
+    appearance:none; -webkit-appearance:none;
+    border:1px solid var(--rule,#aeb4b0); border-radius:6px;
+    background:var(--surface,#fff); color:var(--text); text-align:center;
+    font-family:inherit; font-size:0.92rem; line-height:1.5;
+    padding:3px 6px; outline:none; transition:border-color .12s ease, background .12s ease;
+  }
+  .ed-input:hover:not(:disabled) { border-color:var(--text-muted); cursor:text; }
+  .ed-input:focus { border-color:var(--primary,#0b6b4f); box-shadow:0 0 0 2px rgba(11,107,79,0.12); }
+  .ed-input:disabled { color:var(--text); opacity:1; }
+  /* Inline and to the LEFT of the box, exactly where the paper prints it. Hung
+     underneath — as the clozes hang theirs under a thin rule — it would land in
+     the middle of the next line, because this box has a border and a height. */
+  .ed-num { font-size:0.78rem; font-weight:700; color:var(--text-muted); margin-right:5px; user-select:none; }
+  .ed-item.right .ed-input { border-color:#16a34a; background:#dcfce7; }
+  .ed-item.wrong .ed-input { border-color:#dc2626; background:#fee2e2; }
+  .ed-item.wrong .ed-wrong { text-decoration-color:#dc2626; }
+  /* The editor preview: the correction sitting in its own box. */
+  .ed-item.static .ed-fill { display:inline-block; min-width:80px; padding:3px 9px; border:1px solid var(--border); border-radius:6px; font-size:0.9rem; color:var(--primary,#0b6b4f); text-align:center; background:var(--surface,#fff); }
+  .ed-item.static .ed-fill.todo { color:var(--accent-orange,#b7791f); font-style:italic; border-style:dashed; }
+  .ed-alt { font-size:0.72rem; font-weight:700; color:var(--text-muted); margin-left:5px; vertical-align:super; cursor:help; }
+  .ed-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:26px 0 4px; }
+  .ed-hint { font-size:0.8rem; color:var(--text-muted); line-height:1.6; }
+  .ed-feedback { margin:6px 0 4px; }
+  .ed-fb-list { display:flex; flex-direction:column; gap:5px; margin-top:9px; font-size:0.85rem; color:var(--text); line-height:1.6; }
+  .ed-fb-was { text-decoration:line-through; color:var(--text-muted); }
+  .ed-fb-alt { color:var(--text-muted); }
+  .ed-fb-why { color:var(--text-muted); font-style:italic; }
 /* ---- ✍️ Synthesis & transformation — rewrite using the word given ---------
    One box, because the AI marks the sentence as a whole. When the paper GIVES
    the opening it is printed beside the box rather than typed into it, and
@@ -3246,6 +3282,23 @@ option {
     font-weight: 700;
     line-height: 1.3;
     color: #000;
+  }
+  /* ✏️ Editing: the error prints (it IS the question) and only the correction
+     is left blank. The number sits to the LEFT of the box, inline, as the paper
+     prints it — a box with a border has no room to hang one underneath. */
+  .print-ed-item { white-space: nowrap; }
+  .print-ed-num {
+    font-size: 8pt;
+    font-weight: 700;
+    color: #000;
+    margin: 0 3pt 0 4pt;
+  }
+  .print-ed-box {
+    display: inline-block;
+    min-width: 78pt;
+    min-height: 13pt;
+    border: 1pt solid #000;
+    vertical-align: middle;
   }
 
   
@@ -6723,6 +6776,10 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
             <button class="add-block-btn plainanswer-add" onclick="addBlock('clozeopen')" title="One passage with numbered blanks and NO word bank. Students type a word into every blank and submit them all at once; the AI marks each blank against the passage, and more than one word can be right.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
               &#x1F4DD; Add Cloze (no word bank)
+            </button>
+            <button class="add-block-btn plainanswer-add" onclick="addBlock('editpassage')" title="Editing: a passage in which about ten words are wrong — misspelt or the wrong form. The wrong word stays on the page, underlined, with a numbered box beside it for the student's correction. Submitted all at once and marked by the AI against the passage.">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              &#x270F;&#xFE0F; Add Editing Passage
             </button>
             <button class="add-block-btn plainanswer-add" onclick="addBlock('synthesis')" title="Synthesis &amp; transformation: one or two sentences, a word the student must use, and one rewritten sentence meaning the same thing. The AI marks the sentence as a whole.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
