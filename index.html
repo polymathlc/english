@@ -173,19 +173,37 @@
    One box, because the AI marks the sentence as a whole. When the paper GIVES
    the opening it is printed beside the box rather than typed into it, and
    _openAnswerText puts it back before marking. */
-  .sy-block { border:1px solid var(--border); border-radius:12px; padding:16px 18px 14px; background:var(--surface,#fff); }
-  .sy-given { font-size:0.95rem; line-height:1.7; margin-bottom:14px; }
-  .sy-answer-row { display:flex; gap:9px; align-items:flex-start; flex-wrap:wrap; }
-  .sy-cue-fixed { flex:0 0 auto; padding:9px 2px; font-size:0.95rem; font-weight:600; line-height:1.5; white-space:nowrap; }
-  .sy-input { flex:1; min-width:220px; padding:10px; border:1px solid var(--border); border-radius:8px; font-family:inherit; font-size:0.95rem; line-height:1.5; resize:vertical; background:#fff; color:var(--text); }
+  .sy-block { border:1px solid var(--border); border-radius:12px; padding:18px 20px 16px; background:var(--surface,#fff); }
+  .sy-given { font-size:0.95rem; line-height:1.7; margin-bottom:18px; }
+  .sy-answer-row { display:flex; gap:10px; align-items:flex-start; }
+  /* The answer is written across the paper's RULES, not into a box: one line to
+     click and type on, the word provided printed where the paper prints it, and
+     the next rule underneath. `.sy-line` is the rule — a bottom border and
+     nothing else, so the caret sits ON the line the way a pen would. It is what
+     the marking paths paint, so it must keep border-color free for them. */
+  .sy-lines { flex:1; min-width:0; display:flex; flex-direction:column; gap:16px; }
+  .sy-line-row { display:flex; align-items:baseline; gap:10px; }
+  .sy-line {
+    flex:1; min-width:80px; appearance:none; -webkit-appearance:none;
+    border:0; border-bottom:1.5px solid var(--rule,#aeb4b0); border-radius:0;
+    background:transparent; color:var(--text);
+    font-family:inherit; font-size:0.98rem; line-height:1.8;
+    padding:2px 4px 4px; outline:none; transition:border-color .12s ease;
+  }
+  .sy-line::placeholder { color:var(--text-muted); opacity:.65; font-size:0.9rem; }
+  .sy-line:hover:not(:disabled) { border-bottom-color:var(--text-muted); cursor:text; }
+  .sy-line:focus { border-bottom-width:2px; border-bottom-color:var(--primary,#0b6b4f); padding-bottom:3px; }
+  .sy-line:disabled { color:var(--text); opacity:1; background:transparent; }
+  /* Printed on the paper, never typed — so never inside the rule.
+     _openAnswerText puts all three back before the answer is marked. */
+  .sy-lead, .sy-cue-end { flex:0 0 auto; font-size:0.98rem; font-weight:600; white-space:nowrap; }
+  .sy-stop { flex:0 0 auto; font-size:0.98rem; font-weight:600; margin-left:-6px; }
   .sy-meta { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:11px; }
-  .sy-cue-chip { font-size:0.78rem; line-height:1.5; color:var(--accent-blue,#2d6ca8); background:var(--accent-blue-light,#eaf1f8); border-radius:999px; padding:5px 12px; }
   .sy-marks { font-size:0.72rem; font-weight:800; letter-spacing:0.05em; text-transform:uppercase; color:var(--text-muted); }
   .sy-hint { font-size:0.79rem; color:var(--text-muted); line-height:1.6; }
   .sy-model { font-size:0.88rem; line-height:1.7; margin-top:10px; color:var(--primary,#0b6b4f); }
-  /* The editor's preview draws the rules the paper prints. */
-  .sy-rule { flex:1; min-width:120px; border-bottom:1.5px solid var(--text); height:1.6em; }
-  .sy-cue-end { flex:0 0 auto; padding-top:0.35em; font-size:0.95rem; font-weight:600; white-space:nowrap; }
+  /* The editor's preview draws the same rules, unwritable. */
+  .sy-rule { flex:1; min-width:120px; border-bottom:1.5px solid var(--text); height:1.7em; }
   .sy-ed-label { display:block; font-size:0.85rem; font-weight:600; margin-bottom:7px; }
   .sy-ed-label span { font-weight:400; color:var(--text-muted); }
   .sy-ed-row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; margin-top:14px; }
@@ -279,6 +297,9 @@
   --surface-alt: #fafbfa;
   --border: #e3e6e4;
   --border-focus: #0b6b4f;
+  /* A ruled line to write ON, not a container edge — darker than --border, or
+     the paper's rules read as a faint seam and nothing invites a click. */
+  --rule: #aeb4b0;
   --text: #14161a;
   --text-muted: #666c71;
   --text-light: #7f868b;   /* 3.7:1 on white — the lightest that still clears WCAG AA for non-essential text */

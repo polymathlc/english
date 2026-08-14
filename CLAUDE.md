@@ -293,7 +293,30 @@ Kwan. He is our local football player." + "whom"*.
 constraint.** There is no marking a rewrite in pieces — the meaning lives in the
 arrangement, so a clause correct on its own can still be the wrong answer, and a
 sentence differing from the model answer word for word can still be right. The
-student writes into ONE box and the marker receives ONE string.
+student writes ONE sentence and the marker receives ONE string.
+
+### On screen it is the PAPER: ruled lines, not a box (v1.9.1)
+
+The paper gives this question two ruled lines with the word provided printed at
+one end of the first, and the student writes one sentence across both. That is
+what the screen shows: `syLines(block)` clickable rules, the cue printed where
+the paper prints it, the closing full stop at the end of the last rule — and
+**no square marks box**, which on paper is where a teacher writes a mark and on
+screen is furniture.
+
+- **Several boxes, still ONE answer.** `_openAnswerEls(el)` is the ONE place the
+  group of rules is resolved, and everything that reads, paints, clears or locks
+  an answer asks it. Each of those fails in its own silent way if a rule is
+  missed: half a sentence surviving a reset into the next question, a red border
+  on rule one and none on rule two, and worst — a second rule still typeable
+  after the question has been marked and scored.
+- A box with no `data-sy-group` **answers for itself**, which is every other
+  question type in the app. They see no change at all.
+- Only the **FIRST rule** is the registered `.open-answer` and carries
+  `data-oidx`. Two would register one answer twice and mark the student on half
+  a sentence, twice over.
+- `syLineKey` walks the rules — Enter and ↓ forward, ↑ and Backspace-on-empty
+  back, never Tab, and never into a locked rule.
 
 - **It hangs off the EXISTING open-answer plumbing rather than growing its own.**
   It renders an `.open-answer` inside an `.open-answer-section` and registers one
@@ -305,12 +328,16 @@ student writes into ONE box and the marker receives ONE string.
   back to comparing wording against the model answer and fails every valid
   rewrite phrased differently — which is most of them. Both prompts say a rubric
   OVERRIDES the default "compare by meaning" instruction for that item.
-- **`_openAnswerText(el)` is the ONE place an answer is read from a box**, and
-  both marking paths call it. When the paper GIVES the opening ("This plot of
-  corn ______") that opening is *printed beside* the box, not typed into it, so
-  it is put back before marking — otherwise the marker gets a fragment and marks
-  a perfect answer as not a sentence. An empty box stays empty: the prefix alone
-  is never an answer.
+- **`_openAnswerText(el)` is the ONE place an answer is read**, and both marking
+  paths call it. It joins the rules into one sentence and puts back everything
+  the paper PRINTED and the student therefore never typed: the given opening
+  ("This plot of corn ______"), or the marker gets a fragment and marks a perfect
+  answer as not a sentence; and the closing **full stop**, or it marks a perfect
+  answer down for punctuation nobody asked for. It never double-punctuates. An
+  empty set of rules stays empty: the prefix alone is never an answer.
+- **`syStudentHtml` refuses a block with nothing given**, exactly as
+  `syPrintHtml` does — an item is a markable answer, and one with no question
+  behind it is a mark the student can never earn.
 - `cuePos` is `'use'` (printed at the end of the rule, the sentence must contain
   it) or `'start'` (the given opening). Only `'start'` writes a `data-prefix`.
 - **`QPART_OPENER_TYPES` gained `'synthesis'`** — the block carries its own
@@ -318,6 +345,8 @@ student writes into ONE box and the marker receives ONE string.
 - **Both print builders carry an explicit `case 'synthesis'`**, for `fillblank`'s
   reason: the read-only rendering shows the model answer, which on a worksheet
   is the whole question given away.
+- The PRINTED page **keeps its marks box** (`print-sy-box`). Screen and paper
+  differ here on purpose: paper is marked with a pen.
 - Run **`node tools/synthesis-tests.mjs`** after touching any of it.
 
 ## Word & grammar help on a marked question's options
