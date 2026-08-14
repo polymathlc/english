@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.7.0';
+const APP_VERSION = 'v1.8.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -9407,9 +9407,10 @@ function _aiBuildQuestionPrompt(isPdf, imageCount) {
 function _partsPromptRules() {
   return `- LETTERED PARTS: if the question has sub-parts (a), (b), (c), give EACH part its own text block, starting with its own marker written exactly as "(a) " / "(b) " — one marker per block, never two parts in the same block.\n` +
     `- THE "part" FIELD: any block may carry "part" — the sub-question it belongs to, written exactly as the paper prints it: "part":"a" for a lettered part, "part":"21" for a numbered one.\n` +
-    `- A PASSAGE WITH NUMBERED QUESTIONS — a comprehension passage, article, poster or infographic followed by questions numbered 21, 22, 23… — is ONE question, never one question per number. Put the passage FIRST: its text blocks, and one "image" block for each picture, poster or diagram in it. Then one block for each numbered question that follows, in order.\n` +
-    `- Give every one of those numbered questions "part" set to the number PRINTED ON THE PAPER: "part":"21", "part":"22", "part":"23". Use the paper's own numbers exactly — never renumber them 1, 2, 3 and never relabel them (a), (b), (c). Those numbers are the only thing tying each set of options back to the passage.\n` +
-    `- Where such a question has wording of its own, put it in a "text" block carrying the SAME "part", directly above the block that answers it. The shared instruction line above the passage ("For each question from 21 to 28, four options are given…") gets NO "part" at all.\n` +
+    `- A PASSAGE WITH SEVERAL QUESTIONS — a comprehension passage, article, poster or infographic followed by questions numbered 21, 22, 23… — is ONE question, never one question per number. Put the passage FIRST: its text blocks, and one "image" block for each picture, poster or diagram in it. Then one block for each question that follows, in order.\n` +
+    `- LETTER those questions: "part":"a" for the first question after the passage, "part":"b" for the next, "part":"c", and so on in the order they appear. IGNORE the paper's own numbering — 21, 22, 23 are that exam paper's question numbers, not this question's, and this question stands on its own. Skip the letter "i".\n` +
+    `- If the passage TEXT carries markers tied to those questions — an underlined word followed by "(16)", a numbered blank "(26)" — rewrite each marker to the LETTER of the question it belongs to, so "(16)" becomes "(a)" when question 16 is the first one. The marker and its question must always agree.\n` +
+    `- Where such a question has wording of its own, put it in a "text" block carrying the SAME "part", directly above the block that answers it. The shared instruction line above the passage ("For each question from 21 to 28, four options are given…") gets NO "part" at all — and drop the paper's question range from it, since the questions are now lettered.\n` +
     `- A poster, infographic, advertisement or illustrated article used as the passage is ONE "image" block with the rectangle drawn around the WHOLE of it. Do not transcribe it into text and do not cut it into pieces.\n` +
     `- Give EACH part its own answer block ("answer" or "plainanswer") directly under the text block that asks it, so every part has its own model answer.\n` +
     `- EXPLANATIONS follow the parts: a question with NO parts finishes with ONE "explanation" block; a question WITH parts gets ONE explanation block PER PART, placed directly after that part's own answer block and explaining ONLY that part's question and answer. Never write one explanation covering several parts, and never put an explanation about part (b) underneath part (a).\n`;
@@ -13131,21 +13132,52 @@ function _pbPassageHtml(text) {
     .map(l => escapeHtml(l).replace(/__([^_]+)__/g, '<u>$1</u>'))
     .join('<br>');
 }
+// The letter each sub-question gets: the first one after the passage is (a),
+// the next (b), in the order they appear. The paper's own 16, 17, 18 are that
+// exam paper's numbering, not this question's — a bank question stands on its
+// own, and one that opens at part (21) reads as though twenty parts are
+// missing. Returns '' past the end of the alphabet; see pbPartOverflow.
+function pbPartLetter(i) { return QPART_ASSIGN[i] || ''; }
+function pbPartOverflow(subs) { return Math.max(0, ((subs || []).length) - QPART_ASSIGN.length); }
+// The markers inside the passage, renumbered to match. The paper prints "(16)"
+// against the underlined word that question 16 asks about, so lettering the
+// questions without touching the passage leaves the student reading "(16)" over
+// the word and hunting for a question 16 that is now part (a). Only the
+// parenthesised marker form is rewritten, and only a whole number: "(160)" and
+// the 16 in "16 January" are left exactly as they were.
+function _pbRelabelPassage(passage, subs) {
+  let out = String(passage == null ? '' : passage);
+  ((subs || [])).forEach((s, i) => {
+    const letter = pbPartLetter(i);
+    if (!letter || !(s && s.n)) return;
+    out = out.replace(new RegExp('\\(\\s*' + s.n + '\\s*\\)', 'g'), '(' + letter + ')');
+  });
+  return out;
+}
 // The blocks, ready to append. Kept separate from the dialog so the whole
 // shape is testable without a DOM.
 function pbBuildBlocks(parsed, intro) {
   const out = [];
+  const subs = (parsed && parsed.subs) || [];
   const head = String(intro || '').trim();
   if (head) out.push(Object.assign(createBlock('text'), { content: _pbPassageHtml(head), part: '' }));
-  if (parsed && parsed.passage) out.push(Object.assign(createBlock('text'), { content: _pbPassageHtml(parsed.passage), part: '' }));
-  ((parsed && parsed.subs) || []).forEach(sub => {
+  const passage = _pbRelabelPassage((parsed && parsed.passage) || '', subs);
+  if (passage) out.push(Object.assign(createBlock('text'), { content: _pbPassageHtml(passage), part: '' }));
+  subs.forEach((sub, i) => {
+    const letter = pbPartLetter(i);
+    // Never write an EMPTY part: qPartMap inherits forward, so an unlabelled
+    // sub-question is filed under the PREVIOUS one and two option lists share a
+    // heading — the very thing parts exist to prevent. Past the alphabet the
+    // sub-question is dropped and the author is told, which is the only honest
+    // outcome (see pbInsert).
+    if (!letter) return;
     const b = createBlock('mcq');
     b.options = sub.options.map(t => ({ id: generateBlockId(), text: t }));
     // An unpicked answer stays unpicked. Guessing one would put a tick against
     // an option nobody chose, and the question would mark every class that ever
     // sat it against the wrong word.
     b.correctId = (sub.correct >= 0 && b.options[sub.correct]) ? b.options[sub.correct].id : null;
-    b.part = qPartNormalize(String(sub.n));
+    b.part = letter;
     out.push(b);
   });
   return out;
@@ -13197,10 +13229,13 @@ function pbRender() {
   const unset = subs.filter(s => s.correct < 0).length;
   const foot = document.getElementById('pbFoot');
   if (foot) {
+    const over = pbPartOverflow(subs);
+    const letters = subs.map((_, i) => pbPartLetter(i)).filter(Boolean);
     foot.innerHTML = `<span style="flex:1;font-size:0.82rem;color:var(--text-muted);line-height:1.6;">${
       subs.length
-        ? `${subs.length} sub-question${subs.length === 1 ? '' : 's'} — parts (${subs.map(s => s.n).join(') (')})` +
-          (unset ? ` · <b style="color:var(--accent-orange,#b7791f);">${unset} still need${unset === 1 ? 's' : ''} its correct option</b>` : ' · every answer set')
+        ? `${subs.length} sub-question${subs.length === 1 ? '' : 's'} — parts (${letters.join(') (')})` +
+          (unset ? ` · <b style="color:var(--accent-orange,#b7791f);">${unset} still need${unset === 1 ? 's' : ''} its correct option</b>` : ' · every answer set') +
+          (over ? ` · <b style="color:var(--accent-red,#b23b36);">${over} more than there are letters — those will be left out</b>` : '')
         : 'Nothing to add yet.'}</span>
       <button class="btn btn-outline" type="button" onclick="pbClose()">Cancel</button>
       <button class="btn btn-primary" type="button" onclick="pbInsert()"${subs.length ? '' : ' disabled'}>Add to this question</button>`;
@@ -13209,9 +13244,9 @@ function pbRender() {
     host.innerHTML = `<div class="pb-empty">Paste the passage and the option lists above. The passage is everything before the first question number.</div>`;
     return;
   }
-  const rows = subs.map(s => `
-    <div class="pb-row">
-      <div class="pb-row-n">${s.n}</div>
+  const rows = subs.map((s, i) => `
+    <div class="pb-row${pbPartLetter(i) ? '' : ' over'}">
+      <div class="pb-row-n">${pbPartLetter(i) ? '(' + pbPartLetter(i) + ')' : '—'}<span class="pb-row-was">was ${s.n}</span></div>
       <div class="pb-row-opts">
         ${s.options.map((o, i) => `
           <label class="pb-opt${s.correct === i ? ' on' : ''}">
@@ -13221,8 +13256,8 @@ function pbRender() {
       </div>
     </div>`).join('');
   host.innerHTML =
-    (_pbParsed.passage ? `<div class="pb-sec-label">Passage</div><div class="pb-passage">${_pbPassageHtml(_pbParsed.passage)}</div>` : '')
-    + (subs.length ? `<div class="pb-sec-label">Sub-questions — tick the correct option for each</div>${rows}` : '');
+    (_pbParsed.passage ? `<div class="pb-sec-label">Passage</div><div class="pb-passage">${_pbPassageHtml(_pbRelabelPassage(_pbParsed.passage, subs))}</div>` : '')
+    + (subs.length ? `<div class="pb-sec-label">Sub-questions — lettered (a) (b) (c)… in order; tick the correct option for each</div>${rows}` : '');
 }
 function pbInsert() {
   const subs = _pbParsed.subs || [];
@@ -13234,9 +13269,12 @@ function pbInsert() {
   renderBlocks();
   pbClose();
   const unset = subs.filter(s => s.correct < 0).length;
-  showToast(`📑 Added the passage and ${subs.length} sub-question${subs.length === 1 ? '' : 's'} as parts (${subs.map(s => s.n).join(') (')})`
-    + (unset ? ` · ${unset} still ${unset === 1 ? 'needs its' : 'need their'} correct option ticked` : ''),
-    unset ? 'info' : 'success');
+  const over = pbPartOverflow(subs);
+  const letters = subs.map((_, i) => pbPartLetter(i)).filter(Boolean);
+  showToast(`📑 Added the passage and ${letters.length} sub-question${letters.length === 1 ? '' : 's'} as parts (${letters.join(') (')})`
+    + (unset ? ` · ${unset} still ${unset === 1 ? 'needs its' : 'need their'} correct option ticked` : '')
+    + (over ? ` · ${over} more than there are letters — those were left out` : ''),
+    over ? 'error' : unset ? 'info' : 'success');
 }
 
 // ---- One-off migration: typed "a)" markers → official parts --------------

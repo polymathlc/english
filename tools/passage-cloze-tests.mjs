@@ -63,7 +63,8 @@ function createBlock(type) {
 `;
 
 const M = new Function(preamble + parts + cb + pb +
-  '\nreturn { qPartIsNum, qPartNormalize, qBlockOpensPart, qPartLabelFirst, _pbQStart, _pbParse, _pbParseKey, _pbPassageHtml, pbBuildBlocks,' +
+  '\nreturn { qPartIsNum, qPartNormalize, qBlockOpensPart, qPartLabelFirst, _pbQStart, _pbParse, _pbParseKey, _pbPassageHtml,'
+  + ' pbBuildBlocks, pbPartLetter, pbPartOverflow, _pbRelabelPassage,' +
   ' cbBank, cbBankMap, _cbGrid, cbIntro, cbAnswerKeyText, _cbBlanks, _cbStart, cbHasBlanks, CB_LETTERS };')();
 
 const cases = [];
@@ -207,14 +208,56 @@ test('an empty key yields nothing rather than a wrong guess', () => {
 
 // ── the blocks that come out ────────────────────────────────────────────────
 
-test('the passage becomes one text block and each question its own numeric part', () => {
+test('the passage becomes one text block and each question its own LETTERED part', () => {
+  // The paper's 16 and 17 are that exam paper's numbering, not this question's.
+  // A bank question stands on its own, and one opening at part (16) reads as
+  // though fifteen parts are missing.
   const p = M._pbParse(PAPER);
   p.subs[0].correct = 2;
-  const out = M.pbBuildBlocks(p, 'For each question from 16 to 20…');
+  const out = M.pbBuildBlocks(p, 'For each question, choose the word closest in meaning…');
   eq(out.map(b => b.type), ['text', 'text', 'mcq', 'mcq']);
-  eq(out[2].part, '16');
-  eq(out[3].part, '17');
+  eq(out[2].part, 'a');
+  eq(out[3].part, 'b');
   ok(out[2].correctId === out[2].options[2].id, 'the ticked option is the one marked correct');
+});
+
+test('the markers INSIDE the passage are renumbered to match', () => {
+  // Letter the questions and leave the passage alone and the student reads
+  // "(16)" over the underlined word, then hunts for a question 16 that is now
+  // part (a). The marker and its question must always agree.
+  const p = M._pbParse(PAPER);
+  const out = M.pbBuildBlocks(p, '');
+  const passage = out[0].content;
+  ok(/\(a\)/.test(passage), 'the first marker did not become (a): ' + passage.slice(0, 160));
+  ok(/\(b\)/.test(passage), 'the second marker did not become (b)');
+  ok(!/\(16\)/.test(passage) && !/\(17\)/.test(passage), 'a paper number survived in the passage');
+});
+
+test('only the parenthesised marker form is renumbered', () => {
+  // "(160)" and the 16 in "16 January" are not markers.
+  const subs = [{ n: 16 }, { n: 17 }];
+  eq(M._pbRelabelPassage('On 16 January, (16) of the (160) cases, see (17).', subs),
+     'On 16 January, (a) of the (160) cases, see (b).');
+});
+
+test('a passage with no markers is left exactly as it was', () => {
+  eq(M._pbRelabelPassage('Nothing to renumber here.', [{ n: 21 }]), 'Nothing to renumber here.');
+  eq(M._pbRelabelPassage(null, [{ n: 21 }]), '');
+});
+
+test('the letters run a, b, c… and skip i, as the editor does elsewhere', () => {
+  eq([0, 1, 2, 7, 8].map(M.pbPartLetter), ['a', 'b', 'c', 'h', 'j']);
+});
+
+test('past the alphabet a sub-question is DROPPED, never given an empty part', () => {
+  // qPartMap inherits forward, so an unlabelled sub-question is filed under the
+  // previous one and two option lists share a heading.
+  const subs = Array.from({ length: 30 }, (_, i) => ({ n: i + 1, options: ['a', 'b'], correct: -1 }));
+  const out = M.pbBuildBlocks({ passage: 'P', subs }, '');
+  const mcqs = out.filter(b => b.type === 'mcq');
+  eq(mcqs.length, 25, 'the alphabet holds 25 parts');
+  ok(mcqs.every(b => b.part), 'a sub-question was written with an empty part');
+  eq(M.pbPartOverflow(subs), 5, 'the overflow must be reported, not swallowed');
 });
 
 test('an unticked sub-question is saved with NO correct option', () => {
