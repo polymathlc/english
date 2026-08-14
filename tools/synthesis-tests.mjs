@@ -14,10 +14,19 @@
 // wordings, so a correct rewrite phrased differently is marked wrong. Nothing
 // throws; the child simply gets a red border on a right answer.
 //
-// `_openAnswerText` puts back the opening the PAPER gave. "This plot of corn"
-// is printed beside the box, not typed into it, so without this the marker is
-// handed a sentence fragment — "was grown from scratch by the farmer" — and
-// marks a perfect answer as not a sentence.
+// `_openAnswerText` puts back what the PAPER gave and the student therefore
+// never typed: the opening ("This plot of corn"), and the full stop printed at
+// the end of the last rule. Without the first the marker is handed a sentence
+// fragment — "was grown from scratch by the farmer" — and marks a perfect
+// answer as not a sentence; without the second it marks a perfect answer down
+// for punctuation nobody asked for.
+//
+// The answer is written across the paper's RULED LINES — two boxes, one
+// sentence — so `_openAnswerEls` is the ONE place that group is resolved.
+// Everything that reads, paints, clears or locks an answer goes through it, and
+// each of those fails in its own silent way if a rule is missed: a second rule
+// still live after the question is finished, a red border on one line and none
+// on the next, half a sentence surviving a reset into the next question.
 import fs from 'fs';
 
 const APP = new URL('../app.js', import.meta.url).pathname;
@@ -33,7 +42,14 @@ const cut = (from, to, what) => {
 
 const section = [
   cut('const SY_MARKS_DEFAULT', "// ---- the student's box", 'synthesis core'),
+  cut('function syStudentHtml(items', '\n// Moving between the rules', 'student rules'),
+  cut('function syLineKey(ev, el)', '\n}\n', 'line keys') + '\n}\n',
   cut('function syPrintHtml(block)', '\n}\n', 'print') + '\n}\n',
+  `
+function micButtonHtml() { return '<button class="mic-btn"></button>'; }
+function _partActionsHtml() { return '<div class="part-actions"></div>'; }
+function _adminAnswerToolHtml() { return '<div class="admin-ans-tool"></div>'; }
+`,
   // The synthesis arm of the builder, reached through the real function.
   'const SY_LINES_DEFAULT_X = SY_LINES_DEFAULT;',
   cut('function buildBlocksFromAi', '\n// Build a full pending question object', 'builder'),
@@ -57,7 +73,8 @@ function qPartNormalize(v) {
 
 const M = new Function(section +
   '\nreturn { syIsBlock, syGiven, syCue, syAnswer, syStartsWith, syMarks, syLines, syReady,' +
-  ' syRubric, _openAnswerText, syPrintHtml, buildBlocksFromAi, SY_MARKS_DEFAULT, SY_LINES_MAX };')();
+  ' syRubric, _openAnswerText, _openAnswerEls, _openAnswerPaint, _openAnswerClear, _openAnswerLock,' +
+  ' syStudentHtml, syLineKey, syPrintHtml, buildBlocksFromAi, SY_MARKS_DEFAULT, SY_LINES_MAX };')();
 
 const cases = [];
 const test = (name, fn) => cases.push({ name, fn });
@@ -74,6 +91,32 @@ const Q67 = { type: 'synthesis', given: 'The farmer grew this plot of corn from 
 const Q70 = { type: 'synthesis', given: 'Produce the voucher to get your meal.', cue: 'or', cuePos: 'use', answer: 'Produce the voucher or you will not get your meal.', marks: 2 };
 // A textarea, as the marking paths see it.
 const box = (value, prefix) => ({ value, dataset: prefix ? { prefix } : {} });
+
+// The paper's ruled lines, as the marking paths see them: n inputs sharing one
+// data-sy-group inside one .open-answer-section, the FIRST of them carrying the
+// printed opening and the printed full stop.
+const rules = (values, prefix) => {
+  const els = [];
+  const section = {
+    querySelectorAll(sel) {
+      const m = /^\[data-sy-group="(.*)"\]$/.exec(sel);
+      return m ? els.filter(e => e._g === m[1]) : [];
+    }
+  };
+  values.forEach((v, i) => {
+    const e = {
+      _g: 'g1', value: v, style: {}, disabled: false, selectionStart: 0, focused: false,
+      dataset: i === 0 ? Object.assign({ suffix: '.' }, prefix ? { prefix } : {}) : {},
+      getAttribute: a => (a === 'data-sy-group' ? e._g : null),
+      closest: s => (s === '.open-answer-section' ? section : null),
+      focus() { e.focused = true; },
+      setSelectionRange() {}
+    };
+    els.push(e);
+  });
+  return els;
+};
+const key = (k, extra) => Object.assign({ key: k, shiftKey: false, prevented: false, preventDefault() { this.prevented = true; } }, extra || {});
 
 // ── the block itself ────────────────────────────────────────────────────────
 
@@ -126,6 +169,152 @@ test('a missing element or dataset never throws', () => {
   eq(M._openAnswerText(null), '');
   eq(M._openAnswerText({ value: 'x' }), 'x');
   eq(M._openAnswerText({}), '');
+});
+
+// ── the ruled lines are ONE answer ──────────────────────────────────────────
+
+test('a sentence written across two rules reaches the marker as one sentence', () => {
+  // The whole design constraint of this question type: there is no marking a
+  // rewrite in pieces, so two boxes must arrive as one string.
+  const r = rules(['Mr Kwan, whom we admire,', 'is our local football player']);
+  eq(M._openAnswerText(r[0]), 'Mr Kwan, whom we admire, is our local football player.');
+});
+
+test('the full stop the paper prints is put back — and never doubled', () => {
+  eq(M._openAnswerText(rules(['He ran home', 'because he was late'])[0]), 'He ran home because he was late.');
+  eq(M._openAnswerText(rules(['He ran home because he was late.', ''])[0]), 'He ran home because he was late.');
+  eq(M._openAnswerText(rules(['Did he go home?', ''])[0]), 'Did he go home?', 'a question mark already ends the sentence');
+  eq(M._openAnswerText(rules(['He shouted, "Go home!"', ''])[0]), 'He shouted, "Go home!"', 'a closing quote still counts as ended');
+});
+
+test('the given opening still comes back, now in front of the rules', () => {
+  const r = rules(['was grown from scratch', 'by the farmer'], 'This plot of corn');
+  eq(M._openAnswerText(r[0]), 'This plot of corn was grown from scratch by the farmer.');
+});
+
+test('untouched rules are still no answer at all', () => {
+  // Otherwise an untouched question is marked as "This plot of corn." — a
+  // fragment the marker judges, so "you did not answer" becomes "wrong".
+  eq(M._openAnswerText(rules(['', ''], 'This plot of corn')[0]), '');
+  eq(M._openAnswerText(rules(['   ', ''])[0]), '');
+});
+
+test('a blank rule in the middle does not leave a hole in the sentence', () => {
+  eq(M._openAnswerText(rules(['He ran home', '  ', 'because he was late'])[0]),
+     'He ran home because he was late.');
+});
+
+test('painting, clearing and locking reach EVERY rule, not just the first', () => {
+  // Each of these is silent on its own: a red border on rule one and none on
+  // rule two, half a sentence surviving into the next question, and — the worst
+  // — a second rule still typeable after the question has been marked.
+  const r = rules(['one', 'two']);
+  M._openAnswerPaint(r[0], 'red');
+  eq(r.map(x => x.style.borderColor), ['red', 'red'], 'the verdict must colour the whole answer');
+  M._openAnswerLock(r[0], true);
+  eq(r.map(x => x.disabled), [true, true], 'a finished question must lock every rule');
+  M._openAnswerClear(r[0]);
+  eq(r.map(x => x.value), ['', ''], 'another go must clear every rule');
+  eq(r.map(x => x.disabled), [false, false], 'and unlock every rule');
+});
+
+test('an ordinary answer box is not a group and is left alone', () => {
+  const b = box('x');
+  eq(M._openAnswerEls(b).length, 1, 'every other question type must see no change');
+  eq(M._openAnswerEls(null), []);
+});
+
+// ── the rules on screen ─────────────────────────────────────────────────────
+
+const student = (b) => M.syStudentHtml([], b, '#c', '(a)');
+
+test('the word provided sits at the END of the first rule, as the paper prints it', () => {
+  const h = student(Q66);
+  ok(h.indexOf('sy-line') < h.indexOf('whom'), '"whom" must follow the rule it is printed after');
+  ok(/sy-cue-end/.test(h), 'the cue is printed beside the rule, never typed into it');
+  ok(!/data-prefix/.test(h), 'a "use" cue is not the opening of the answer');
+});
+
+test('a given OPENING sits in front of the first rule and is put back to mark', () => {
+  const h = student(Q67);
+  ok(h.indexOf('This plot of corn') < h.indexOf('<input'), 'the opening precedes the rule');
+  ok(/data-prefix="This plot of corn"/.test(h), 'without this the marker is handed a fragment');
+});
+
+test('the last rule ends in the full stop the paper prints', () => {
+  ok(/sy-stop/.test(student(Q66)), 'the closing full stop is missing');
+  ok(/data-suffix="\."/.test(student(Q66)), 'and it must be put back before marking');
+});
+
+test('every rule is drawn, and ONLY the first is the registered answer', () => {
+  // Two data-oidx would register one answer twice and mark the student on half
+  // a sentence, twice over.
+  const h = student(Object.assign({}, Q66, { lines: 3 }));
+  eq((h.match(/data-sy-group=/g) || []).length, 3, 'a rule was dropped');
+  eq((h.match(/data-oidx=/g) || []).length, 1, 'exactly one rule is the answer element');
+  eq((h.match(/class="open-answer sy-line"/g) || []).length, 1);
+});
+
+test('the question registers exactly ONE item, marked by the rubric', () => {
+  const items = [];
+  M.syStudentHtml(items, Q66, '#c', '(a)');
+  eq(items.length, 1, 'a rewrite is marked as one whole sentence, so it is one item');
+  eq(items[0].model, Q66.answer);
+  ok(/AS ONE WHOLE SENTENCE/.test(items[0].rubric), 'the rubric must travel with the item');
+});
+
+test('the square marks box is not drawn on screen', () => {
+  // It is where a teacher WRITES a mark on paper; there is nothing to write on
+  // here, and the screen is not a marking sheet.
+  const h = student(Q66);
+  ok(!/print-sy-box|sy-marks|sy-cue-chip/.test(h), 'the paper-only furniture is on screen: ' + h);
+});
+
+test('a block with nothing given draws no rules at all', () => {
+  eq(M.syStudentHtml([], { type: 'synthesis', given: '' }, '#c', ''), '');
+});
+
+// ── moving between the rules ────────────────────────────────────────────────
+
+test('Enter carries on down to the next rule', () => {
+  const r = rules(['He ran home', '']);
+  const ev = key('Enter');
+  M.syLineKey(ev, r[0]);
+  ok(r[1].focused, 'Enter must move to the next rule');
+  ok(ev.prevented, 'and never submit the surrounding form');
+});
+
+test('Enter on the LAST rule stays put', () => {
+  const r = rules(['a', 'b']);
+  M.syLineKey(key('Enter'), r[1]);
+  ok(!r[0].focused, 'it must not wrap back round to the first rule');
+});
+
+test('Backspace goes back only from an EMPTY rule', () => {
+  const r = rules(['He ran home', '']);
+  M.syLineKey(key('Backspace'), r[1]);
+  ok(r[0].focused, 'an empty rule hands the caret back');
+
+  const r2 = rules(['He ran home', 'because']);
+  M.syLineKey(key('Backspace'), r2[1]);
+  ok(!r2[0].focused, 'a rule with writing on it deletes a letter instead');
+});
+
+test('a locked rule is never focused', () => {
+  // The question is finished; Enter must not walk the caret into a dead box.
+  const r = rules(['a', '']);
+  r[1].disabled = true;
+  M.syLineKey(key('Enter'), r[0]);
+  ok(!r[1].focused, 'a finished question must not hand the caret on');
+});
+
+test('an ordinary key is left entirely alone', () => {
+  const r = rules(['a', '']);
+  const ev = key('x');
+  M.syLineKey(ev, r[0]);
+  ok(!ev.prevented && !r[1].focused, 'typing must just type');
+  M.syLineKey(key('Enter'), null);   // never throws
+  M.syLineKey(null, r[0]);
 });
 
 // ── syRubric — what the marker is actually told ─────────────────────────────

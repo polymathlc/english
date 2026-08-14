@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.9.0';
+const APP_VERSION = 'v1.9.1';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -20977,15 +20977,49 @@ function syLines(b) { const n = Number(b && b.lines); return (isFinite(n) && n >
 // A block with nothing given is not a question yet — no answer box, nothing to
 // mark, and nothing on the printed page but an empty rule.
 function syReady(b) { return syIsBlock(b) && !!syGiven(b); }
+// ---- one answer, several ruled lines ---------------------------------------
+// The paper gives this question TWO rules and the student writes one sentence
+// across them, so on screen it is two boxes to click and type in — and still ONE
+// answer, marked as one whole sentence. `_openAnswerEls` is the ONE place that
+// group is resolved: everything that reads, paints, clears or locks an answer
+// box asks it, so a rule can never be left typed-in after a reset, live after
+// the question is finished, or unpainted when the mark comes back.
+//
+// A box that is not part of a group answers for itself, which is every other
+// question type in the app — they see no change at all.
+function _openAnswerEls(el) {
+  if (!el) return [];
+  const g = (el.getAttribute && el.getAttribute('data-sy-group')) || '';
+  if (!g || !el.closest) return [el];
+  // Scoped to the section, never the document: the same block can be on screen
+  // in two surfaces at once, and a group id is per-block.
+  const scope = el.closest('.open-answer-section');
+  const all = scope ? Array.from(scope.querySelectorAll('[data-sy-group="' + g + '"]')) : [];
+  return all.length ? all : [el];
+}
+// Painting the verdict, clearing for another go, and locking a finished
+// question. Each one is what the single-box code did, applied to every rule.
+function _openAnswerPaint(el, color) { _openAnswerEls(el).forEach(x => { x.style.borderColor = color || ''; }); }
+function _openAnswerClear(el) { _openAnswerEls(el).forEach(x => { x.value = ''; x.disabled = false; x.style.borderColor = ''; }); }
+function _openAnswerLock(el, on) { _openAnswerEls(el).forEach(x => { x.disabled = !!on; }); }
+
 // What the student's box is worth putting in front of the marker. The printed
 // opening is not in the box — it was given — so it is put back here, in the one
-// place both marking paths read an answer from.
+// place both marking paths read an answer from. So is the closing full stop the
+// paper prints at the end of the last rule: without it the marker is handed an
+// unpunctuated sentence and marks a perfect rewrite down for punctuation the
+// student was never asked to type.
 function _openAnswerText(el) {
   if (!el) return '';
-  const typed = String(el.value == null ? '' : el.value).trim();
-  const pre = String((el.dataset && el.dataset.prefix) || '').trim();
+  const typed = _openAnswerEls(el)
+    .map(x => String(x && x.value == null ? '' : x.value).trim())
+    .filter(Boolean).join(' ').trim();
   if (!typed) return '';
-  return (pre ? pre + ' ' : '') + typed;
+  const pre = String((el.dataset && el.dataset.prefix) || '').trim();
+  const suf = String((el.dataset && el.dataset.suffix) || '').trim();
+  let out = (pre ? pre + ' ' : '') + typed;
+  if (suf && !/[.!?]["'”’)\]]?$/.test(out)) out += suf;
+  return out;
 }
 
 // The marking instruction, written once. Everything else about this question
@@ -21012,6 +21046,10 @@ function syRubric(block) {
 // the part actions and an `.open-feedback` — because that is what every
 // marking path already looks for.
 function syStudentHtml(items, block, containerSel, partLabel) {
+  // Nothing given is not a question yet, so it registers NO item: an item is a
+  // markable answer, and one with no question behind it is a mark the student
+  // can never earn. syPrintHtml refuses the same block for the same reason.
+  if (!syReady(block)) return '';
   const oidx = items.length;
   const cue = syCue(block);
   const start = syStartsWith(block);
@@ -21022,25 +21060,61 @@ function syStudentHtml(items, block, containerSel, partLabel) {
     block, field: 'answer'
   });
   const prefix = (start && cue) ? cue : '';
-  const marks = syMarks(block);
+  // The group id ties the rules together for _openAnswerEls. Per BLOCK, because
+  // one question can hold five of these; sanitised because it lands in an
+  // attribute selector.
+  const gid = 'syl' + oidx + '_' + String((block && block.id) || '').replace(/[^A-Za-z0-9_-]/g, '');
+  const n = syLines(block);
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const first = i === 0, last = i === n - 1;
+    // The word provided sits exactly where the paper prints it: in front of the
+    // first rule when the opening is given, at the end of it otherwise. The
+    // closing full stop sits at the end of the last rule. None of the three is
+    // typed — they are printed, so they are put back by _openAnswerText.
+    const lead = (first && prefix) ? `<span class="sy-lead">${escapeHtml(prefix)}</span>` : '';
+    const tail = (first && cue && !start ? `<span class="sy-cue-end">${escapeHtml(cue)}</span>` : '')
+      + (last ? '<span class="sy-stop">.</span>' : '');
+    // The FIRST rule is the registered `.open-answer` — one item, one answer,
+    // marked as one sentence. The rest are its continuation lines.
+    const own = first
+      ? `class="open-answer sy-line" data-oidx="${oidx}"${prefix ? ` data-prefix="${escapeHtml(prefix)}"` : ''} data-suffix="."`
+      : 'class="sy-line"';
+    const ph = first ? (prefix ? '…finish the sentence' : 'Click and type your sentence') : '';
+    rows.push(`<div class="sy-line-row">${lead}<input type="text" ${own} data-sy-group="${gid}"
+          placeholder="${ph}" autocomplete="off" autocapitalize="sentences"
+          onkeydown="syLineKey(event, this)">${tail}</div>`);
+  }
   return `<div class="open-answer-section sy-block" data-mic-wrap>
       <div class="sy-given">${escapeHtmlKeepLines(syGiven(block))}</div>
       <div class="sy-answer-row">
-        ${prefix ? `<span class="sy-cue-fixed">${escapeHtml(prefix)}</span>` : ''}
-        <textarea class="open-answer sy-input" data-oidx="${oidx}" rows="2"
-          ${prefix ? `data-prefix="${escapeHtml(prefix)}"` : ''}
-          placeholder="${prefix ? '…finish the sentence' : 'Write the whole sentence'}"></textarea>
+        <div class="sy-lines">${rows.join('')}</div>
         ${micButtonHtml('', 'Speak your answer')}
-      </div>
-      <div class="sy-meta">
-        ${cue ? `<span class="sy-cue-chip">${start ? 'Begin with' : 'Must use'}: <b>${escapeHtml(cue)}</b></span>` : ''}
-        <span class="sy-marks">${marks} mark${marks === 1 ? '' : 's'}</span>
-        <span class="sy-hint">One sentence, same meaning.</span>
       </div>
       ${_partActionsHtml(containerSel, 'open', oidx)}
       ${_adminAnswerToolHtml(containerSel, oidx, syAnswer(block))}
       <div class="open-feedback" style="margin-top:4px;"></div>
     </div>`;
+}
+
+// Moving between the rules with the keyboard, so a sentence that runs past the
+// first one carries on where the paper carries it on. Enter and ↓ go forward;
+// ↑ and a Backspace on an empty rule go back — never Tab, which is how the rest
+// of the page is walked. A rule is a single line by design: it is a rule.
+function syLineKey(ev, el) {
+  if (!ev || !el) return;
+  const k = ev.key;
+  const fwd = (k === 'Enter' && !ev.shiftKey) || k === 'ArrowDown';
+  const back = k === 'ArrowUp' || (k === 'Backspace' && !el.value && el.selectionStart === 0);
+  if (!fwd && !back) return;
+  const group = _openAnswerEls(el);
+  const at = group.indexOf(el);
+  if (at < 0) return;
+  const next = group[at + (fwd ? 1 : -1)];
+  if (!next || next.disabled) { if (k === 'Enter') ev.preventDefault(); return; }
+  ev.preventDefault();
+  next.focus();
+  try { const end = (next.value || '').length; next.setSelectionRange(end, end); } catch (_) {}
 }
 
 // ---- on PAPER ---------------------------------------------------------------
@@ -21078,13 +21152,18 @@ function syPrintHtml(block) {
 function _syEditorPreviewHtml(block) {
   if (!syReady(block)) return '<span style="color:var(--text-muted);font-size:0.82rem;">Type the sentence(s) above.</span>';
   const cue = syCue(block), start = syStartsWith(block);
+  const n = syLines(block);
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const first = i === 0, last = i === n - 1;
+    rows.push(`<div class="sy-line-row">${first && start && cue ? `<span class="sy-lead">${escapeHtml(cue)}</span>` : ''}` +
+      `<span class="sy-rule"></span>` +
+      (first && cue && !start ? `<span class="sy-cue-end">${escapeHtml(cue)}</span>` : '') +
+      (last ? '<span class="sy-stop">.</span>' : '') + `</div>`);
+  }
   return `<div class="sy-block">
       <div class="sy-given">${escapeHtmlKeepLines(syGiven(block))}</div>
-      <div class="sy-answer-row">
-        ${start && cue ? `<span class="sy-cue-fixed">${escapeHtml(cue)}</span>` : ''}
-        <span class="sy-rule"></span>
-        ${!start && cue ? `<span class="sy-cue-end">${escapeHtml(cue)}</span>` : ''}
-      </div>
+      <div class="sy-lines">${rows.join('')}</div>
       <div class="sy-meta"><span class="sy-marks">${syMarks(block)} mark${syMarks(block) === 1 ? '' : 's'}</span>
         ${syAnswer(block) ? `<span class="sy-hint">Answer: ${escapeHtml(syAnswer(block))}</span>` : '<span class="sy-hint" style="color:var(--accent-orange,#b7791f);">No model answer yet — the AI marks against it.</span>'}</div>
     </div>`;
@@ -21263,11 +21342,7 @@ function renderPracticeQuestion(q, student) {
 }
 
 function resetOpenAnswersIn(containerSel, scoreElId) {
-  document.querySelectorAll(containerSel + ' .open-answer').forEach(a => {
-    a.value = '';
-    a.disabled = false;
-    a.style.borderColor = 'var(--border)';
-  });
+  document.querySelectorAll(containerSel + ' .open-answer').forEach(_openAnswerClear);
   document.querySelectorAll(containerSel + ' .fb-input').forEach(a => { a.value = ''; a.disabled = false; a.style.borderColor = 'var(--border)'; a.style.background = '#fff'; });
   document.querySelectorAll(containerSel + ' .open-feedback, ' + containerSel + ' .mcq-feedback, ' + containerSel + ' .fb-feedback').forEach(fb => { fb.innerHTML = ''; });
   document.querySelectorAll(containerSel + ' .part-hint-box').forEach(h => { h.style.display = 'none'; h.innerHTML = ''; });
@@ -21674,7 +21749,7 @@ async function markOpenAnswersIn(containerSel, q, opts = {}) {
 
   // Reset visuals
   areas.forEach(a => {
-    a.style.borderColor = 'var(--border)';
+    _openAnswerPaint(a, '');
     const sec = a.closest('.open-answer-section');
     const fb = sec && sec.querySelector('.open-feedback');
     if (fb) fb.innerHTML = '';
@@ -21785,7 +21860,7 @@ async function markOpenAnswersIn(containerSel, q, opts = {}) {
       `<span style="color:var(--text-muted);font-size:0.85rem;"> — ${escapeHtml(v && v.feedback ? v.feedback : '')}</span>`;
     if (e.kind === 'open') {
       if (verdict !== 'correct') mistakes.push({ expected: e.model, student: e.student });
-      e.areaEl.style.borderColor = color;
+      _openAnswerPaint(e.areaEl, color);
       const sec = e.areaEl.closest('.open-answer-section');
       const fb = sec && sec.querySelector('.open-feedback');
       if (fb) {
@@ -22091,7 +22166,7 @@ async function markQuestionPart(containerSel, kind, pid, btn) {
     `<span style="color:var(--text-muted);font-size:0.85rem;"> — ${escapeHtml(parsed.feedback || '')}</span>`;
 
   if (kind === 'open') {
-    areaEl.style.borderColor = color;
+    _openAnswerPaint(areaEl, color);
     const modelShown = model || String(parsed.modelAnswer || '').trim();
     if (fbEl) {
       let inner = fbHead;
@@ -25394,7 +25469,7 @@ function resetQpOpenAnswers() {
 function _qpAllPartsMarked(res) {
   if (qpSubmitted) return;
   qpSubmitted = true;
-  document.querySelectorAll('#qpContainer .open-answer').forEach(a => a.disabled = true);
+  document.querySelectorAll('#qpContainer .open-answer').forEach(a => _openAnswerLock(a, true));
   document.querySelectorAll('#qpContainer .part-ai-btn').forEach(b => b.disabled = true);
   _recordQpResult(res.score, res.total, res.mistakes);
   qpAnswered = Math.max(qpAnswered, qpIndex + 1);
@@ -27782,7 +27857,7 @@ function tpResetOpenAnswers() {
 function _tpAllPartsMarked(res) {
   if (tpSubmitted) return;
   tpSubmitted = true;
-  document.querySelectorAll('#tpContainer .open-answer').forEach(a => a.disabled = true);
+  document.querySelectorAll('#tpContainer .open-answer').forEach(a => _openAnswerLock(a, true));
   document.querySelectorAll('#tpContainer .part-ai-btn').forEach(b => b.disabled = true);
   _recordTpResult(res.score, res.total, res.mistakes);
   tpAnswered = Math.max(tpAnswered, tpIndex + 1);
@@ -33202,14 +33277,16 @@ function ppStyles(){
      so the card shows the question and its answer spaces, nothing else. */
   .pp-pe-preview { border:1px solid var(--border); border-radius:12px; padding:18px 20px; background:var(--surface-alt,#fafbfa); }
   .pp-pe-preview .qp-part { background:var(--surface,#fff); }
-  .pp-pe-preview .open-answer, .pp-pe-preview .fb-input, .pp-pe-preview input[type=radio] { pointer-events:none; }
+  .pp-pe-preview .open-answer, .pp-pe-preview .sy-line, .pp-pe-preview .fb-input, .pp-pe-preview input[type=radio] { pointer-events:none; }
   .pp-pe-preview .part-actions, .pp-pe-preview .part-hint-box, .pp-pe-preview .mcq-feedback,
   .pp-pe-preview .open-feedback, .pp-pe-preview .admin-ans-tool, .pp-pe-preview .mic-btn,
   .pp-pe-preview .fb-actions, .pp-pe-preview .open-photo-bar,
   .pp-pe-preview .dgn-toolbar, .pp-pe-preview .dgn-actions { display:none !important; }
   .pp-pe-preview { pointer-events:none; }
   .pp-pe-preview img { pointer-events:auto; }   /* still clickable to enlarge */
-  .pp-pe-preview .open-answer { min-height:52px; background:#fff; }
+  /* The BOX answer only — a synthesis rule is an .open-answer too, and 52mm of
+     white on a ruled line is not a rule any more. */
+  .pp-pe-preview textarea.open-answer { min-height:52px; background:#fff; }
   .pp-pe-prevwait, .pp-pe-noq { font-size:0.85rem; color:var(--text-muted); line-height:1.65; }
   /* The answer key sits directly under the question — the thing being checked,
      next to the thing it answers. */
@@ -36439,6 +36516,7 @@ window.cbSetExtras = cbSetExtras;
 window.cbToggleToken = cbToggleToken;
 window.sySyncEditor = sySyncEditor;
 window.syAiAnswer = syAiAnswer;
+window.syLineKey = syLineKey;
 window.clearAllParts = clearAllParts;
 window.qPartScanBank = qPartScanBank;
 window.qPartAutoConvertInBackground = qPartAutoConvertInBackground;
