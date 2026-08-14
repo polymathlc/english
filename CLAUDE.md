@@ -150,6 +150,46 @@ Topic lists carry **no P3–P6 headings** — not the bank filter, the authoring
 owned by a year the way a Science one is. The level each topic is filed under is
 still live (it gates what a student may be served); it is simply not announced.
 
+## Word & grammar help on a marked question's options
+
+`wh*` (in `app.js`, search `WORD & GRAMMAR HELP`). Once a multiple-choice
+question has been **marked**, every option becomes hoverable — tap the ⓘ on a
+touch screen — and the card says two things: what the word or phrase **means**,
+and why that word **does or does not work in this sentence** (the tense, the
+preposition, the part of speech, the partner word).
+
+The second half is the point of it. `_genAndShowExplanation` writes an A.I.
+Explanation only when the question has an OPEN part (`hasOpen`), so before this
+an MCQ-only question — most of English grammar practice — ended at a red border
+and a green one and told the student nothing about the difference.
+
+- **`_mcqPaintResult` is the ONE painter**, and `whArm` is called from it and
+  nowhere else. All three marking paths (`markOpenAnswersIn`, and both branches
+  of `markQuestionPart`) carried their own copy of the colouring loop, which is
+  exactly how this would have ended up armed on two surfaces out of three.
+- **It must never arm before marking.** Hover the four options on an unanswered
+  question and the one that "fits" is the one to tick. `resetOpenAnswersIn`
+  disarms for the same reason, and the gate is the **`wh-on` class checked in
+  `_whOpen`** — not unbinding the listeners, which cannot be done without a
+  handle on every closure, and which is why a reset used to leave a question
+  that still answered a hover.
+- **ONE call covers the WHOLE option list**, through `askGeminiCached` (this is
+  its first caller) so the prompt hash is the cache key: the prompt carries the
+  question, every option and which is correct, so an edited question can never
+  be served the old wording's answers. A failed call **removes** that key — the
+  raw reply is already in `sessionStorage`, and if it was the PARSE that failed,
+  leaving it makes every retry for the rest of the session fail instantly.
+- **An answer is placed against an option by the option's OWN number.** This is
+  the one thing here that fails silently: an explanation under the wrong option
+  reads perfectly and teaches a child the opposite of the truth. `_whNormItems`
+  falls back to positional order **only** when the model numbered nothing at all
+  AND returned exactly one entry per option; a partial unnumbered list is
+  dropped rather than guessed at.
+- **An option with no words gets no badge** (`_whHasWords`). A question whose
+  choices read "(1) (2) (3) (4)" against a diagram — the shape ✅ Check
+  Questions exists to encourage — has nothing to define.
+- Run **`node tools/word-help-tests.mjs`** after touching any of it.
+
 ## Printing
 
 - **Printed / PDF worksheet answer boxes** are sized from the MODEL ANSWER by
@@ -539,7 +579,7 @@ reported in chat, to know whether the deploy actually went through.
   named constant used at every call site rather than a string typed out in three
   places, and swapping the model means checking its scale first. The Science app
   (`polymathlc/cer`) carries the same pair — keep the two in step.
-- Run the six harnesses after touching what they cover — every failure they
+- Run the seven harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
@@ -555,6 +595,10 @@ reported in chat, to know whether the deploy actually went through.
     reports nothing to move; wrong in the other it offers a one-click **delete
     from the Science bank**. It also pins the premise the whole heuristic rests
     on: that the two subjects' topic lists share no entry.
+  - `node tools/word-help-tests.mjs` — which OPTION each of the model's answers
+    is about. Line them up wrong and the popout still opens, still looks right
+    and still reads fluently, while telling a child that "reluctantly" cannot be
+    used because it is an adjective.
 
 ### Two CSS traps in `index.html`
 
