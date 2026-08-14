@@ -85,6 +85,7 @@ const googleProvider = new GoogleAuthProvider();
 // =====================================================================
 const QUESTIONS_COL = 'questionsEn';        // users/{uid}/questionsEn
 const VETTING_COL   = 'vettingEn';          // users/{uid}/vettingEn
+const BIN_COL       = 'binEn';              // users/{uid}/binEn — deleted, restorable for BIN_DAYS
 const SETTINGS_COL  = 'settingsEn';         // users/{uid}/settingsEn
 const NOTES_COL     = 'teachingNotesEn';    // users/{uid}/teachingNotesEn
 const STATS_COL     = 'statsEn';            // users/{uid}/statsEn
@@ -1631,6 +1632,7 @@ async function enterApp(user) {
     // in the background (ten workers, metadata fallback — see autoTagAllQuestions).
     autoTagWholeBankInBackground();
     qPartAutoConvertLater();   // typed "a)" markers -> official parts, once per load
+    binInit();                 // sweep anything deleted more than BIN_DAYS ago
     // Warm the image cache in the background so bank / Doctor / Past Papers
     // images show instantly (non-blocking, idle-scheduled).
     warmImageCacheInBackground(questionBank);
@@ -1662,6 +1664,7 @@ async function enterApp(user) {
     renderWsQuestions();
     warmImageCacheInBackground(questionBank);
     qPartAutoConvertLater();
+    binInit();
   } else {
     // Student: load admin's question bank
     configureSidebarForRole('student');
@@ -1737,7 +1740,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.3.0';
+const APP_VERSION = 'v1.4.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -11673,14 +11676,19 @@ async function confirmRegenerate() {
   }
 }
 
+// Every real deletion in the app goes to the BIN, never straight out. The
+// confirm stays here because the bank is a dense list of small 🗑 icons with no
+// undo in view; the ✅ Check Questions queue drops it, because there it is one
+// big button with an ↩ Undo sitting beside it.
 function deleteQuestion(id) {
-  showConfirm('Delete Question', 'Are you sure you want to permanently delete this question?', () => {
-    questionBank = questionBank.filter(q => q.id !== id);
-    renderQuestionBank();
-    updateCounts();
-    showToast('Question deleted', 'info');
-    deleteQuestionDoc(id);
-  });
+  const q = _docQById(id);
+  showConfirm('Delete question',
+    `“${(q && q.title) || 'Untitled question'}” goes to the bin. You can restore it there for ${BIN_DAYS} days.`,
+    async () => {
+      if (!await binQuestion(id)) return;
+      renderQuestionBank();
+      showToast(`Moved to the bin — restorable for ${BIN_DAYS} days`, 'info');
+    });
 }
 
 // =====================================================================
@@ -17395,6 +17403,29 @@ async function lbMove() {
     failed ? 'error' : 'success');
 }
 
+// Firestore rejects nested arrays. A LOADED table block carries data as
+// array-of-arrays and colWidths as an array (normalizeLoadedQuestion restores
+// them for the editor), so anything writing a HELD question back out — a save,
+// the tag passes, the usage backfill, a trip to the bin — has to convert them
+// on the way, exactly as collectQuestionData does for the editor. The in-memory
+// object is left alone: it is still the one the editor and the bank are using.
+function _firestoreSafeQuestion(q) {
+  const needs = q && Array.isArray(q.blocks) && q.blocks.some(b => b && b.type === 'table' &&
+    (Array.isArray(b.data) || Array.isArray(b.colWidths)));
+  if (!needs) return q;
+  const out = JSON.parse(JSON.stringify(q));
+  out.blocks.forEach(b => {
+    if (!b || b.type !== 'table') return;
+    if (Array.isArray(b.data)) b.data = tableDataToFirestore(b.data);
+    if (Array.isArray(b.colWidths)) {
+      const cw = {};
+      b.colWidths.forEach((w, i) => { if (w !== null && w !== undefined) cw[String(i)] = w; });
+      b.colWidths = cw;
+    }
+  });
+  return out;
+}
+
 let _inflightOps = 0;
 let _saveHideTimer = null;
 
@@ -17439,25 +17470,7 @@ async function saveQuestion(q, opts) {
     if (_inflightOps === 0) _setSaveStatus(ok ? 'saved' : 'error');
     return ok;
   };
-  // Firestore rejects nested arrays. A LOADED table block carries data as
-  // array-of-arrays and colWidths as an array (normalizeLoadedQuestion restores
-  // them for the editor), so a save from a held object — the tag passes, the
-  // usage backfill — must convert them back on the way out, exactly as
-  // collectQuestionData does for the editor. The in-memory object stays as-is.
-  let payload = q;
-  if (q && Array.isArray(q.blocks) && q.blocks.some(b => b && b.type === 'table' &&
-      (Array.isArray(b.data) || Array.isArray(b.colWidths)))) {
-    payload = JSON.parse(JSON.stringify(q));
-    payload.blocks.forEach(b => {
-      if (!b || b.type !== 'table') return;
-      if (Array.isArray(b.data)) b.data = tableDataToFirestore(b.data);
-      if (Array.isArray(b.colWidths)) {
-        const cw = {};
-        b.colWidths.forEach((w, i) => { if (w !== null && w !== undefined) cw[String(i)] = w; });
-        b.colWidths = cw;
-      }
-    });
-  }
+  const payload = _firestoreSafeQuestion(q);
   let attempts = 0;
   while (attempts < tries) {
     try {
@@ -17535,6 +17548,307 @@ function deleteVettingDoc(id) {
   deleteDoc(_vRef(id))
     .then(() => _xtAnnounceQuestion(id, 'vetting', 'del'))
     .catch(err => console.warn('deleteVettingDoc:', err));
+}
+
+// =====================================================================
+// 🗑 THE BIN — deleting a question stopped being final  (v1.4.0)
+//
+// A question is somebody's work: a screenshot cropped, an answer written, a
+// diagram touched up, an explanation checked. Deleting one used to be a
+// `deleteDoc` behind a confirm dialog, which is the whole of it gone on a
+// mis-tap — and the ✅ Check Questions queue is exactly where a tired person
+// taps quickly. So a deletion is now a MOVE:
+//
+//     users/{uid}/questionsEn/{id}   →   users/{uid}/binEn/{id}
+//
+// and it stays there, restorable in one tap, for BIN_DAYS (7) — after which it
+// is deleted for good. Same shape as every other move in this file: copy, READ
+// THE COPY BACK, and only then delete the original. A copy that cannot be
+// verified leaves the question exactly where it was.
+//
+// Two things follow from a binned question being OUT of `questionsEn`:
+//   · no practice mode, worksheet, game or search can serve it — the bin is not
+//     a flag on a live question, it is the question being gone;
+//   · a saved worksheet that referenced it says so (the worksheet editor already
+//     draws a row for an id the bank no longer has), and restoring puts it back.
+//
+// The purge is CLIENT-SIDE — there is no server here — so it runs when an
+// author next opens the app, not on the stroke of the seventh day. binDaysLeft
+// is therefore what the bin PROMISES (never less than the real 7 days), not a
+// countdown to an exact moment.
+// =====================================================================
+const BIN_DAYS = 7;              // how long a deleted question is kept
+const BIN_PURGE_DELAY = 6000;    // after sign-in, out of the way of first paint
+let _binList = [];               // newest deletion first
+let _binLoaded = false;
+let _binBusy = false;
+
+function _binRef(id) { return doc(db, 'users', _bankOwnerUid(), BIN_COL, id); }
+function _binCol()   { return collection(db, 'users', _bankOwnerUid(), BIN_COL); }
+
+// When this record is due to go, or null if its date cannot be read.
+//
+// Only a STRING is accepted, and that is not fussiness: `Date.parse` coerces,
+// so a number like 12345 parses as the YEAR 12345 and the record would sit in
+// the bin until the year 12345. Anything that is not an ISO string is a shape
+// this app does not write, so it is treated as unknown rather than guessed at.
+function _binExpiryMs(rec) {
+  const raw = rec && rec.deletedAt;
+  if (typeof raw !== 'string' || !raw) return null;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t + BIN_DAYS * 864e5 : null;
+}
+// Whole days remaining, rounded UP: a question deleted 20 minutes ago has 7
+// days left, not 6. `null` means the date cannot be read.
+function binDaysLeft(rec) {
+  const at = _binExpiryMs(rec);
+  if (at === null) return null;
+  const ms = at - Date.now();
+  return ms <= 0 ? 0 : Math.ceil(ms / 864e5);
+}
+// A record whose date cannot be read is NEVER swept. The two mistakes here are
+// not equal: keeping one too long leaves a row in a dialog with a Delete
+// forever button beside it, and sweeping one too early destroys work with
+// nothing on screen to show it happened. So when in doubt, keep it.
+function binExpired(rec) {
+  const at = _binExpiryMs(rec);
+  return at !== null && at <= Date.now();
+}
+
+function _binRecord(q, from) {
+  return {
+    id: q.id,
+    deletedAt: new Date().toISOString(),
+    deletedBy: (currentUser && currentUser.uid) || '',
+    deletedByName: (currentUser && (currentUser.name || currentUser.email)) || '',
+    from: from || 'bank',
+    // Denormalised so the bin list renders without unpacking every question,
+    // and so a row is still readable if `question` is somehow malformed.
+    title: String(q.title || '').trim() || 'Untitled question',
+    topic: String(q.topic || '').trim(),
+    question: _firestoreSafeQuestion(q),
+  };
+}
+
+async function binLoad(force) {
+  if (!currentUser || !_canAuthor()) return _binList;
+  if (_binLoaded && !force) return _binList;
+  try {
+    const snap = await getDocs(_binCol());
+    const list = [];
+    snap.forEach(d => { const r = d.data(); if (r && r.id) list.push(r); });
+    list.sort((a, b) => String(b.deletedAt || '').localeCompare(String(a.deletedAt || '')));
+    _binList = list;
+    _binLoaded = true;
+  } catch (err) {
+    console.warn('bin load', err);
+  }
+  _binUpdateCount();
+  return _binList;
+}
+
+// Move a question out of the bank and into the bin. Returns true if it landed.
+async function binQuestion(id) {
+  const q = _docQById(id);
+  if (!q || !currentUser) return false;
+  const rec = _binRecord(q, 'bank');
+  try {
+    await setDoc(_binRef(id), rec);
+    const back = await getDoc(_binRef(id));
+    if (!back.exists()) throw new Error('the copy could not be read back');
+  } catch (err) {
+    console.warn('bin write', err);
+    showToast('Could not delete that question — it is still in the bank', 'error');
+    return false;
+  }
+  // Only now is the original safe to remove. Awaited rather than going through
+  // deleteQuestionDoc, because the caller needs to know it really went.
+  try {
+    await deleteDoc(_qRef(id));
+  } catch (err) {
+    console.warn('bin delete original', err);
+    // The bin copy is harmless on its own — the question is still in the bank,
+    // which is the state the author wanted least badly of the two.
+    try { await deleteDoc(_binRef(id)); } catch (_) {}
+    showToast('Could not delete that question — it is still in the bank', 'error');
+    return false;
+  }
+  _xtAnnounceQuestion(id, 'bank', 'del');
+  questionBank = questionBank.filter(x => x.id !== id);
+  _binList.unshift(rec);
+  updateCounts();
+  _binUpdateCount();
+  return true;
+}
+
+// Put one back. The save is QUIET — restoring is not authoring, and it must not
+// land in anybody's work-session log as a question written — but the other tabs
+// are told by hand, because they do need to know the bank changed.
+async function binRestore(id) {
+  const rec = _binList.find(r => r && r.id === id);
+  if (!rec || !rec.question) return false;
+  const q = normalizeLoadedQuestion(JSON.parse(JSON.stringify(rec.question)));
+  const ok = await saveQuestion(q, { quiet: true });
+  if (!ok) { showToast('Could not restore that question — try again', 'error'); return false; }
+  _xtAnnounceQuestion(id, 'bank', 'save');
+  try { await deleteDoc(_binRef(id)); } catch (err) { console.warn('bin clear after restore', err); }
+  _binList = _binList.filter(r => r.id !== id);
+  if (!questionBank.some(x => x.id === id)) questionBank.push(q);
+  updateCounts();
+  _binUpdateCount();
+  return true;
+}
+
+async function _binForget(id) {
+  try { await deleteDoc(_binRef(id)); } catch (err) { console.warn('bin purge', err); return false; }
+  _binList = _binList.filter(r => r.id !== id);
+  _binUpdateCount();
+  return true;
+}
+
+// Everything past its seventh day, swept when an author next opens the app.
+async function binPurgeExpired() {
+  if (!currentUser || !_canAuthor()) return 0;
+  await binLoad(true);
+  const gone = _binList.filter(binExpired);
+  for (const rec of gone) await _binForget(rec.id);
+  if (gone.length) console.log(`bin: ${gone.length} question(s) past ${BIN_DAYS} days deleted for good`);
+  return gone.length;
+}
+
+function binInit() {
+  if (!_canAuthor()) return;
+  setTimeout(() => { binPurgeExpired().catch(e => console.warn('bin purge', e)); }, BIN_PURGE_DELAY);
+}
+
+// ---- the bin dialog -----------------------------------------------------
+function _binUpdateCount() {
+  const n = _binList.length;
+  document.querySelectorAll('.bin-count').forEach(el => {
+    el.textContent = n ? ` (${n})` : '';
+  });
+}
+
+async function binOpen() {
+  if (!_canAuthor()) return;
+  const ov = document.getElementById('binOverlay');
+  if (!ov) return;
+  ov.classList.add('active');
+  binRender('Reading the bin…');
+  await binLoad(true);
+  // Anything already past its seventh day is swept on the way in, so the list
+  // never offers a Restore that would be undone seconds later by the purge.
+  const gone = _binList.filter(binExpired);
+  for (const rec of gone) await _binForget(rec.id);
+  binRender();
+}
+
+function binClose() {
+  if (_binBusy) return;
+  const ov = document.getElementById('binOverlay');
+  if (ov) ov.classList.remove('active');
+}
+
+function binRender(status) {
+  const body = document.getElementById('binBody');
+  const foot = document.getElementById('binFoot');
+  if (!body || !foot) return;
+
+  if (status) {
+    body.innerHTML = `<div style="padding:34px 8px;text-align:center;color:var(--text-muted);line-height:1.7;">
+        <div style="font-size:1.6rem;margin-bottom:10px;">⏳</div>${escapeHtml(status)}
+      </div>`;
+    foot.innerHTML = '';
+    return;
+  }
+
+  if (!_binList.length) {
+    body.innerHTML = `<div style="padding:30px 8px;text-align:center;line-height:1.8;">
+        <div style="font-size:1.8rem;margin-bottom:8px;">🗑</div>
+        <b>The bin is empty.</b><br>
+        <span style="color:var(--text-muted);font-size:0.9rem;">
+          Deleted questions wait here for ${BIN_DAYS} days before they go for good.
+        </span>
+      </div>`;
+    foot.innerHTML = `<button class="btn btn-primary" onclick="binClose()">Done</button>`;
+    return;
+  }
+
+  body.innerHTML = _binList.map(r => {
+    const left = binDaysLeft(r);
+    const urgent = left !== null && left <= 2;
+    const when = _binExpiryMs(r) !== null ? new Date(r.deletedAt).toLocaleString() : 'date unknown';
+    const who = String(r.deletedByName || '').trim();
+    return `<div style="display:flex;gap:14px;align-items:flex-start;padding:14px 15px;border:1px solid var(--border);border-radius:12px;margin-bottom:12px;">
+        <span style="flex:1;min-width:0;line-height:1.65;">
+          <span style="display:block;font-weight:600;">${escapeHtml(r.title || 'Untitled question')}</span>
+          <span style="display:block;color:var(--text-muted);font-size:0.81rem;">
+            ${r.topic ? escapeHtml(r.topic) + ' · ' : ''}deleted ${escapeHtml(when)}${who ? ' by ' + escapeHtml(who) : ''}
+          </span>
+          <span style="display:inline-block;margin-top:7px;font-size:0.76rem;font-weight:600;border-radius:999px;padding:2px 10px;
+                       background:${urgent ? 'rgba(220,60,60,0.1)' : 'rgba(0,0,0,0.05)'};color:${urgent ? '#b3261e' : 'var(--text-muted)'};">
+            ${left === null ? 'kept until you delete it'
+              : left === 0 ? 'goes for good on the next sweep'
+              : left + ' day' + (left === 1 ? '' : 's') + ' left'}
+          </span>
+        </span>
+        <span style="display:flex;gap:8px;flex:0 0 auto;flex-wrap:wrap;justify-content:flex-end;">
+          <button class="btn btn-primary" style="padding:5px 12px;font-size:0.8rem;" onclick="binRestoreClick('${escapeHtml(String(r.id))}')">↩ Restore</button>
+          <button class="btn btn-outline" style="padding:5px 12px;font-size:0.8rem;" onclick="binForgetClick('${escapeHtml(String(r.id))}')">✕ Delete forever</button>
+        </span>
+      </div>`;
+  }).join('');
+
+  foot.innerHTML = `
+    <span style="margin-right:auto;color:var(--text-muted);font-size:0.86rem;">${_binList.length} in the bin</span>
+    <button class="btn btn-outline" onclick="binEmpty()">Empty the bin</button>
+    <button class="btn btn-primary" onclick="binClose()">Done</button>`;
+}
+
+async function binRestoreClick(id) {
+  if (_binBusy) return;
+  _binBusy = true;
+  binRender('Restoring…');
+  const ok = await binRestore(id);
+  _binBusy = false;
+  binRender();
+  if (ok) {
+    showToast('Question restored to the bank ✓', 'success');
+    if (document.querySelector('#page-bank.active')) renderQuestionBank();
+    // It is unread again as far as the checker is concerned, so let the queue
+    // pick it back up rather than waiting for a reload.
+    try { if (document.querySelector('#page-checkq.active')) { _cqBuildQueue(); _cqRender(); } } catch (_) {}
+  }
+}
+
+function binForgetClick(id) {
+  const rec = _binList.find(r => r && r.id === id);
+  if (!rec) return;
+  showConfirm('Delete forever',
+    `“${rec.title || 'Untitled question'}” will be gone for good. This one cannot be undone.`,
+    async () => {
+      _binBusy = true;
+      binRender('Deleting…');
+      await _binForget(id);
+      _binBusy = false;
+      binRender();
+      showToast('Deleted for good', 'info');
+    });
+}
+
+function binEmpty() {
+  if (!_binList.length) return;
+  const n = _binList.length;
+  showConfirm('Empty the bin',
+    `All ${n} question${n === 1 ? '' : 's'} in the bin will be gone for good. This cannot be undone.`,
+    async () => {
+      _binBusy = true;
+      binRender('Emptying the bin…');
+      for (const rec of _binList.slice()) await _binForget(rec.id);
+      _binBusy = false;
+      binRender();
+      showToast('The bin is empty', 'info');
+    });
 }
 
 // =====================================================================
@@ -27475,11 +27789,9 @@ function doctorDismiss(key) { _doctorDismissed.add(key); _doctorRenderResults();
 function doctorOpen(id) { if (_docQById(id)) editQuestion(id); else showToast('That question no longer exists', 'info'); }
 function doctorDelete(id) {
   const q = _docQById(id); if (!q) { _doctorRenderResults(); return; }
-  showConfirm('Delete Question', `Permanently delete “${q.title || 'Untitled'}”? This cannot be undone.`, () => {
-    questionBank = questionBank.filter(x => x.id !== id);
-    deleteQuestionDoc(id);
-    updateCounts();
-    showToast('Question deleted', 'info');
+  showConfirm('Delete question', `“${q.title || 'Untitled'}” goes to the bin. You can restore it there for ${BIN_DAYS} days.`, async () => {
+    if (!await binQuestion(id)) return;
+    showToast(`Moved to the bin — restorable for ${BIN_DAYS} days`, 'info');
     if (document.querySelector('#page-bank.active')) renderQuestionBank();
     _doctorRenderResults();
   });
@@ -27523,6 +27835,7 @@ let _cqPos = 0;                  // where we are in it
 const _cqReviews = new Map();    // id -> { state:'running'|'done'|'error', findings, error }
 let _cqAuto = true;              // run the AI pass automatically on each question
 let _cqLastChecked = '';         // id the last ✓ marked — for Undo
+let _cqLastDeleted = '';         // id the last 🗑 binned — for the same Undo
 
 // ---- reading a question -------------------------------------------------
 function _cqCheckedAt(q) { return (q && q.checked && q.checked.at) || ''; }
@@ -27797,8 +28110,15 @@ function renderCheckQPage() {
 function _cqRender() {
   const host = document.getElementById('cqBody');
   if (!host) return;
+  // ONE Undo, for whichever of the two undoable things happened last. A binned
+  // question is no longer in the bank, so it is checked for in the bin instead.
   const undo = document.getElementById('cqUndoBtn');
-  if (undo) undo.style.display = _cqLastChecked && _docQById(_cqLastChecked) ? '' : 'none';
+  if (undo) {
+    const canUndoDelete = !!(_cqLastDeleted && _binList.some(r => r && r.id === _cqLastDeleted));
+    const canUndoCheck = !!(_cqLastChecked && _docQById(_cqLastChecked));
+    undo.style.display = (canUndoDelete || canUndoCheck) ? '' : 'none';
+    undo.textContent = canUndoDelete ? '↩ Undo delete' : '↩ Undo last ✓';
+  }
   const q = _cqCurrent();
   _cqUpdateBadge();
   if (!q) {
@@ -27846,6 +28166,11 @@ function _cqCardHtml(q) {
         <button class="btn btn-outline" style="${btn}" onclick="cqOpenEditor('${id}')">✏️ Open in editor</button>
         <button class="btn btn-outline" style="${btn}" onclick="cqSkip()">⏭ Skip for now</button>
         <button class="btn btn-outline" style="${btn}margin-left:auto;" onclick="cqRecheck()">🤖 Check with AI</button>
+        <!-- Far right and on its own, away from the buttons this queue is worked
+             with, because it is the one action here that removes something. It
+             asks nothing first: the question goes to the bin, ↩ Undo is at the
+             top of the page, and the bin holds it for a week. -->
+        <button class="btn btn-outline cq-del" style="${btn}" title="Move this question to the bin — restorable for ${BIN_DAYS} days" onclick="cqDelete('${id}')">🗑 Delete</button>
       </div>
     </div>`;
 }
@@ -27958,7 +28283,42 @@ async function cqLooksFine(id) {
     _cqRender();
   }
 }
+// Move the question on show to the bin and step on. No confirm: the bin holds
+// it for a week, ↩ Undo is at the top of the page, and this is a queue somebody
+// is working through — a dialog on every deletion is how a queue stops getting
+// worked through.
+async function cqDelete(id) {
+  const q = _docQById(id);
+  if (!q) { _cqRender(); return; }
+  const title = q.title || 'Untitled question';
+  if (!await binQuestion(id)) { _cqRender(); return; }
+  _cqLastDeleted = id;
+  _cqLastChecked = '';          // the Undo button means the deletion now
+  _cqReviews.delete(id);        // nothing left to have an opinion about
+  _cqRender();
+  if (document.querySelector('#page-bank.active')) renderQuestionBank();
+  showToast(`“${title}” moved to the bin — restorable for ${BIN_DAYS} days`, 'info');
+}
+
+// One Undo for both actions, newest first: a deletion if that was the last
+// thing, otherwise the last ✓.
 async function cqUndo() {
+  if (_cqLastDeleted && _binList.some(r => r && r.id === _cqLastDeleted)) {
+    const id = _cqLastDeleted;
+    _cqLastDeleted = '';
+    const ok = await binRestore(id);
+    if (ok) {
+      // It comes back unchecked, so put the queue back on it rather than
+      // leaving it to surface again whenever the queue is next rebuilt.
+      _cqBuildQueue();
+      const at = _cqQueue.indexOf(id);
+      if (at >= 0) _cqPos = at;
+      showToast('Question restored ✓', 'success');
+    }
+    _cqRender();
+    if (document.querySelector('#page-bank.active')) renderQuestionBank();
+    return;
+  }
   const id = _cqLastChecked;
   const q = id && _docQById(id);
   if (!q) { _cqLastChecked = ''; _cqRender(); return; }
@@ -34333,6 +34693,12 @@ window.lbRescan = lbRescan;
 window.lbToggle = lbToggle;
 window.lbToggleAll = lbToggleAll;
 window.lbMove = lbMove;
+// 🗑 The bin — a deleted question is restorable for BIN_DAYS.
+window.binOpen = binOpen;
+window.binClose = binClose;
+window.binRestoreClick = binRestoreClick;
+window.binForgetClick = binForgetClick;
+window.binEmpty = binEmpty;
 window.setBankView = setBankView;
 window.toggleBankTopicMenu = toggleBankTopicMenu;
 window.toggleBankTopic = toggleBankTopic;
@@ -34583,6 +34949,7 @@ window.cqRefresh = cqRefresh;
 window.cqSkip = cqSkip;
 window.cqRecheck = cqRecheck;
 window.cqUndo = cqUndo;
+window.cqDelete = cqDelete;
 window.cqToggleAuto = cqToggleAuto;
 window.cqLooksFine = cqLooksFine;
 window.cqOpenEditor = cqOpenEditor;

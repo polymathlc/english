@@ -32,6 +32,11 @@ service cloud.firestore {
 
       match /questionsEn/{qid}      { allow read: if signedIn(); allow write: if isSelf(uid); }
       match /vettingEn/{qid}        { allow read: if signedIn(); allow write: if isSelf(uid); }
+      // The bin: questions deleted in the last 7 days, restorable until then.
+      // Deliberately NOT readable by every signed-in account the way the bank
+      // is — a deleted question must not be servable to a student, and the only
+      // people who ever read this are the ones who can put it back.
+      match /binEn/{qid}            { allow read, write: if isSelf(uid); }
       match /settingsEn/{sid}       { allow read: if signedIn(); allow write: if isSelf(uid); }
       match /teachingNotesEn/{nid}  { allow read: if signedIn(); allow write: if isSelf(uid); }
       match /worksheetsEn/{wid}     { allow read, write: if isSelf(uid); }
