@@ -24,7 +24,10 @@ const cut = (from, to, what) => {
 
 const section = [
   "const QPART_ASSIGN = " + /const QPART_ASSIGN = ('[a-z]*')/.exec(src)[1] + ';',
-  cut('function qPartNormalize', '// The part each block belongs to', 'part helpers'),
+  // From the numeric-part constants, not from qPartNormalize itself: a part may
+  // be a NUMBER now (a comprehension passage numbers its sub-questions the way
+  // the paper does) and the regex that decides so is declared just above it.
+  cut('const QPART_NUM_RE', '// The part each block belongs to', 'part helpers'),
   cut('function stripHtml(', '\n\n', 'stripHtml'),
   // escapeHtml goes through the DOM in the app; the shim is the same contract.
   "function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }",

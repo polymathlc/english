@@ -1740,7 +1740,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.5.0';
+const APP_VERSION = 'v1.6.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -3221,6 +3221,16 @@ function createBlock(type) {
       // Paragraph text; blanked answers are wrapped in [[double brackets]].
       block.text = '';
       break;
+    case 'clozebank':
+      // Same [[double bracket]] markup as fillblank — one syntax for blanking a
+      // word — plus the bank the student picks from and the paper's numbering.
+      block.text = '';
+      block.extras = [];        // distractors; the answers are added automatically
+      block.startNum = CB_START_DEFAULT;
+      block.intro = '';         // blank → generated from the passage itself
+      block.once = true;        // each word used only once
+      block.sortBank = true;    // alphabetical, so the order gives nothing away
+      break;
     case 'workingSpace':
       block.lines = 6;
       block.annotate = false;   // true → blank annotation pad in practice (AI-marked)
@@ -4360,6 +4370,7 @@ function renderBlocks() {
       case 'answerLine':  badgeClass = 'plainanswer-badge'; badgeIcon = '✏️'; badgeLabel = 'Answer Line'; break;
       case 'openLines':   badgeClass = 'plainanswer-badge'; badgeIcon = '✍️'; badgeLabel = 'Open-Ended Answer'; break;
       case 'fillblank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔲'; badgeLabel = 'Fill in the Blanks'; break;
+      case 'clozebank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔤'; badgeLabel = 'Comprehension Cloze (word bank)'; break;
       case 'workingSpace':badgeClass = 'plainanswer-badge'; badgeIcon = block.annotate ? '✍️' : '🧮'; badgeLabel = block.annotate ? 'Annotation Working Area' : 'Working Space'; break;
       case 'commonMistake':badgeClass = 'explanation-badge'; badgeIcon = '⚠️'; badgeLabel = 'Common Mistake'; break;
       case 'studentAnswer':badgeClass = 'explanation-badge'; badgeIcon = '🧑‍🎓'; badgeLabel = 'Student Answer'; break;
@@ -4905,6 +4916,10 @@ function saveBlockNum(id, field, value, min, max) {
   if (max != null) n = Math.min(max, n);
   block[field] = n;
 }
+function saveBlockFlag(id, field, on) {
+  const block = blocks.find(b => b.id === id);
+  if (block) block[field] = !!on;
+}
 // Working-space "annotation area" toggle — re-render so the answer-key field
 // and the block badge follow the checkbox.
 function toggleWorkingAnnotate(id, on) {
@@ -5386,6 +5401,41 @@ function renderImportedBlockEditorBody(block) {
           <div style="font-size:0.78rem;color:var(--text-muted);margin:12px 0 4px;">Student preview:</div>
           <div id="fbPrev_${id}" class="fb-preview">${_fbPreviewHtml(block.text || '')}</div>
         </div>`;
+    case 'clozebank': {
+      const blanks = _cbBlanks(block);
+      const bank = cbBank(block);
+      const start = _cbStart(block);
+      const over = bank.length > CB_LETTERS.length;
+      return `
+        <div class="block-body">
+          <textarea id="cbText_${id}" class="form-input" rows="8" placeholder="Paste the whole passage, then click the words below to blank them — e.g.  Managed [[by]] Mandai Wildlife Group, these parks are home [[to]] more than 20,000 animals."
+                    style="width:100%;box-sizing:border-box;font-family:inherit;font-size:0.92rem;line-height:1.7;resize:vertical;"
+                    oninput="saveBlockField('${id}','text',this.value); cbSyncEditor('${id}')">${escapeHtml(block.text || '')}</textarea>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:10px 0 6px;line-height:1.55;">👆 Click a word below to turn it into a numbered blank (click again to undo). Every blanked word joins the word bank automatically — <strong>a bank that is missing one of its own answers is not possible here.</strong></div>
+          <div id="cbChips_${id}" class="fb-chip-wrap">${_fbChipsHtml(id, block.text || '', 'cbToggleToken')}</div>
+
+          <div class="cb-ed-row">
+            <label class="cb-ed-field" style="max-width:190px;">First blank is numbered
+              <input class="form-input" type="number" min="1" max="999" value="${start}"
+                     oninput="saveBlockNum('${id}','startNum',this.value,1,999); cbSyncEditor('${id}')"></label>
+            <label class="cb-ed-check"><input type="checkbox" ${block.sortBank === false ? '' : 'checked'}
+                     onchange="saveBlockFlag('${id}','sortBank',this.checked); cbSyncEditor('${id}')">
+              <span>Sort the bank A–Z <span style="color:var(--text-muted);">— so its order never hints at the answers</span></span></label>
+            <label class="cb-ed-check"><input type="checkbox" ${block.once === false ? '' : 'checked'}
+                     onchange="saveBlockFlag('${id}','once',this.checked)">
+              <span>Each word can be used only once</span></label>
+          </div>
+
+          <label style="font-size:0.85rem;font-weight:600;display:block;margin:14px 0 6px;">Extra words for the bank <span style="font-weight:400;color:var(--text-muted);">— the distractors, one per line or comma-separated. The answers are already in.</span></label>
+          <textarea class="form-input" rows="3" placeholder="since&#10;than&#10;whether"
+                    style="width:100%;box-sizing:border-box;font-family:inherit;font-size:0.9rem;line-height:1.55;resize:vertical;"
+                    oninput="cbSetExtras('${id}', this.value)">${escapeHtml((block.extras || []).join('\n'))}</textarea>
+
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:14px 0 4px;">Student preview — ${blanks.length} blank${blanks.length === 1 ? '' : 's'} (${start}–${start + Math.max(0, blanks.length - 1)}), ${bank.length}-word bank:</div>
+          ${over ? `<div class="cb-ed-warn">⚠ The bank holds ${bank.length} words but there are only ${CB_LETTERS.length} letters — the extras past (${CB_LETTERS[CB_LETTERS.length - 1]}) are dropped.</div>` : ''}
+          <div id="cbPrev_${id}" class="cb-ed-prev">${_cbEditorPreviewHtml(block)}</div>
+        </div>`;
+    }
     case 'workingSpace':
       return `
         <div class="block-body">
@@ -5498,6 +5548,13 @@ function renderImportedBlockStudent(block, q) {
       return `<div class="ws-working" style="margin:10px 0;border:1px dashed #c4c4c4;border-radius:8px;height:${_wsBlockLines(block.lines, 6) * 26}px;"></div>`;
     case 'fillblank':
       return _fbHasBlanks(block) ? `<div style="margin:10px 0;">${_fbReadonlyHtml(block)}</div>` : `<div class="fb-sentence" style="line-height:2;margin:10px 0;">${escapeHtml(block.text || '')}</div>`;
+    // A REVIEW rendering, with the answers in their slots — the same shape as
+    // fillblank's above, and the same reason both print builders carry an
+    // explicit case rather than falling through to it.
+    case 'clozebank':
+      return cbHasBlanks(block)
+        ? `<div style="margin:10px 0;">${_cbEditorPreviewHtml(block)}</div>`
+        : `<div class="cb-passage" style="margin:10px 0;">${escapeHtml(stripHtml(block.text || ''))}</div>`;
     case 'commonMistake': {
       const c = COMMON_MISTAKE_COLORS[block.color] || COMMON_MISTAKE_COLORS.teal;
       return `<div style="margin:10px 0;border-left:4px solid ${c};background:${c}14;padding:8px 12px;border-radius:6px;">
@@ -11403,6 +11460,9 @@ function getQuestionPreview(q) {
     if (block.type === 'fillblank' && (block.text || '').trim()) {
       return clean('Fill in the blanks: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
     }
+    if (block.type === 'clozebank' && (block.text || '').trim()) {
+      return clean('Cloze: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
+    }
   }
   return 'No text content';
 }
@@ -12485,9 +12545,27 @@ function qPartDetect(html) {
   for (let p = 0; p < s.length; p++) if (!kill.has(p)) out += s[p];
   return { letter, html: out };
 }
+// A part may also be a NUMBER. A comprehension passage numbers its
+// sub-questions the way the paper does — 16, 17, 18 — and the number is printed
+// inside the passage itself, against the word each one asks about. Relabelling
+// those (a) (b) (c) breaks the only link between the passage and the question:
+// the student reads "(16)" over the underlined word and then looks for it in a
+// list that goes (a) (b) (c).
+//
+// Detection is deliberately NOT extended — qPartDetect still matches letters
+// only. A number at the start of a line is a question number, a quantity or a
+// year far more often than it is a part, and the whole point of QPART_ASSIGN
+// being longer than QPART_LETTERS is that assigning is a decision and detecting
+// is a guess.
+const QPART_NUM_RE = /^[1-9]\d{0,2}$/;      // 1–999; a paper never numbers past that
+function qPartIsNum(p) { return QPART_NUM_RE.test(String(p == null ? '' : p).trim()); }
 function qPartNormalize(v) {
   const s = String(v == null ? '' : v).trim().toLowerCase().replace(/[()\s.]/g, '');
-  return QPART_ASSIGN.indexOf(s) >= 0 ? s : '';
+  if (QPART_NUM_RE.test(s)) return s;
+  // Length 1 on purpose: `indexOf` on a STRING matches substrings, so "ab" was
+  // read as a valid part and two blocks could open one — a part that no picker
+  // can show and no key can label.
+  return (s.length === 1 && QPART_ASSIGN.indexOf(s) >= 0) ? s : '';
 }
 function qPartLabel(p) { const n = qPartNormalize(p); return n ? '(' + n + ')' : ''; }
 // The part each block belongs to: a block carrying `part` opens it, and every
@@ -12749,7 +12827,13 @@ function qPartNext(blocks) {
 // text also keeps the printed page honest: the question page prints the part
 // label from the text block, so allowing a picture to open a part would put
 // "(b)" on the answer key with nothing marking it on the paper.
-const QPART_OPENER_TYPES = ['text'];
+// An MCQ joins them because of the comprehension papers: the passage prints
+// "(16)" against an underlined word and the sub-question underneath is nothing
+// but its four options — there is no text block to hang the part on, and
+// inventing an empty one to carry it puts a blank line on the paper. The
+// objection above does not apply, because both print paths and buildOpenBody
+// print the label for an MCQ that opens a part, exactly as they do for text.
+const QPART_OPENER_TYPES = ['text', 'mcq'];
 // The compact "Part" control in a block's header. Shown on opener blocks; on
 // everything else the header shows which part the block INHERITS, so it is
 // obvious at a glance where each answer box will be filed on the answer key.
@@ -12772,9 +12856,13 @@ function qPartPickerHtml(block) {
       ? `<span class="qpart-chip inherit" title="This block belongs to part (${inherited}). Set the part on the text above it.">↳ ${escapeHtml(qPartLabel(inherited))}</span>`
       : '';
   }
-  const opts = ['<option value="">Part —</option>'].concat(
-    QPART_ASSIGN.split('').slice(0, 12).map(c => `<option value="${c}"${own === c ? ' selected' : ''}>Part (${c})</option>`)
-  ).join('');
+  // A numeric part is not in the letter list, so it needs an option of its own
+  // or the picker reads "Part —" over a block that has one, and the next touch
+  // of the menu silently throws the paper's numbering away.
+  const opts = ['<option value="">Part —</option>']
+    .concat(qPartIsNum(own) ? [`<option value="${own}" selected>Part (${own})</option>`] : [])
+    .concat(QPART_ASSIGN.split('').slice(0, 12).map(c => `<option value="${c}"${own === c ? ' selected' : ''}>Part (${c})</option>`))
+    .join('');
   return `<select class="qpart-select${own ? ' on' : ''}" title="Start question part (a), (b), … here. Everything below belongs to this part until the next one starts."
     onchange="setBlockPart('${block.id}', this.value)">${opts}</select>`
     + (!own && inherited ? `<span class="qpart-chip inherit" title="Inherited from the part above">↳ ${escapeHtml(qPartLabel(inherited))}</span>` : '');
@@ -12799,8 +12887,18 @@ function toggleBlockPartScope(blockId) {
 // One click: label every opener block that starts a new part, a, b, c… in
 // order. Blocks that already carry a part keep it, so a half-labelled question
 // is finished rather than renumbered under the author's feet.
-function autoNumberParts() {
+// `startAt` blank → the letters (a) (b) (c). A number → the paper's own
+// numbering, 16, 17, 18…, which is what a comprehension passage needs: the
+// number is printed against the underlined word inside the passage, so the
+// sub-question has to wear the same one.
+function autoNumberParts(startAt) {
   if (!Array.isArray(blocks) || !blocks.length) return;
+  const start = parseInt(startAt, 10);
+  const numeric = isFinite(start) && start >= 1 && start <= 999;
+  const seqLabel = n => numeric ? String(start + n) : QPART_ASSIGN[n];
+  // How many the sequence can hold: the alphabet, or whatever is left before
+  // 999. Running out has to stop the numbering, not wrap it.
+  const seqMax = numeric ? (1000 - start) : QPART_ASSIGN.length;
   // A part opens at the TEXT that asks it, and only if something a student
   // writes in follows before the next text block. So a shared preamble above
   // the first sub-question is not numbered, a stem split over two paragraphs
@@ -12824,12 +12922,12 @@ function autoNumberParts() {
   // "unlabelled": qPartMap inherits forward, so it would be filed under the
   // PREVIOUS part and its answer would share that part's heading on the key.
   // Stopping short and saying so is the only honest outcome.
-  const over = Math.max(0, idx.length - QPART_ASSIGN.length);
-  const take = idx.slice(0, QPART_ASSIGN.length);
+  const over = Math.max(0, idx.length - seqMax);
+  const take = idx.slice(0, seqMax);
   let stripped = 0;
   take.forEach((bi, n) => {
     const b = blocks[bi];
-    b.part = QPART_ASSIGN[n];
+    b.part = seqLabel(n);
     // If the marker is still typed at the front of the text, take it out —
     // otherwise the paper reads "(a) a) What is X?".
     if (qPartCountMarkers(b.content) === 1) {
@@ -12841,11 +12939,237 @@ function autoNumberParts() {
   // it is filed under the whole question rather than under the last part.
   qPartUnfileLoneExplanation(blocks);
   renderBlocks();
-  showToast('🔡 Numbered ' + take.length + ' parts: ' + take.map((_, n) => '(' + QPART_ASSIGN[n] + ')').join(' ')
+  showToast('🔡 Numbered ' + take.length + ' parts: ' + take.map((_, n) => '(' + seqLabel(n) + ')').join(' ')
     + (stripped ? ' · removed ' + stripped + ' typed marker' + (stripped === 1 ? '' : 's') + ' from the text' : '')
-    + (over ? ' · ' + over + ' more sub-question' + (over === 1 ? '' : 's') + ' than there are letters — label those from each block\'s Part menu' : ''),
+    + (over ? ' · ' + over + ' more sub-question' + (over === 1 ? '' : 's') + ' than the sequence holds — label those from each block\'s Part menu' : ''),
     over ? 'error' : 'success');
 }
+// The parts bar's "Number from" box: blank falls back to the letters, so one
+// button covers both and an empty box can never write part "NaN".
+function autoNumberPartsFromInput() {
+  const el = document.getElementById('qpartStartNum');
+  const raw = el ? String(el.value || '').trim() : '';
+  autoNumberParts(raw === '' ? null : raw);
+}
+// =====================================================================
+// 📑 PASSAGE BUILDER — one passage, its sub-questions numbered as the paper
+// numbers them
+// =====================================================================
+// The comprehension format the block editor could not express in one question:
+// a passage with (16) (17) (18) printed against underlined words, and below it
+// the option lists that answer them. Added one MCQ at a time it becomes five
+// separate bank questions, and the passage — the whole point of it — is either
+// repeated five times or lost.
+//
+// So it is ONE question: a text block for the passage, then one MCQ per
+// sub-question, each opening its own NUMERIC part (see qPartNormalize). The
+// number is what ties the option list to the word in the passage; relabel them
+// (a) (b) (c) and the student reads "(16)" over the underlined word and then
+// looks for it in a list that does not have one.
+//
+// The parse is deterministic and there is no AI in it. The shape is regular
+// enough to read exactly — and a wrong guess here is not a wrong answer, it is
+// four options quietly filed under the wrong question number.
+//
+//  • A QUESTION opens on a bare number at the start of a line — "16", or
+//    "16  (1) Originated". An option number is parenthesised and single-digit,
+//    so the "(16)" markers inside the passage can never be read as options and
+//    "20,000 animals across 1,000 species" can never be read as question 20.
+//  • Everything before the first question line is the PASSAGE, verbatim.
+//  • A line that is neither continues the option above it, because an option
+//    long enough to wrap arrives as two lines and dropping the tail loses half
+//    the answer without anything looking wrong.
+const PB_QLINE_RE = /^\s*(\d{1,3})\s*[.)]?\s*(?:\(\s*([1-9])\s*\)\s*(.*))?$/;
+const PB_OPT_RE = /^\s*\(\s*([1-9])\s*\)\s*(.+?)\s*$/;
+const PB_MAX_OPTS = 9;
+// A question opener: a bare number on its own, or a number carrying option (1).
+// A number followed by any OTHER option number is a wrapped line, not an opener.
+function _pbQStart(line) {
+  const m = String(line == null ? '' : line).match(PB_QLINE_RE);
+  if (!m) return null;
+  if (m[2] == null) return { n: parseInt(m[1], 10), first: null };
+  if (m[2] !== '1') return null;
+  return { n: parseInt(m[1], 10), first: (m[3] || '').trim() };
+}
+function _pbParse(raw) {
+  const lines = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n').split('\n');
+  // Where the questions begin: the first opener that is either carrying its own
+  // option (1) or followed by one. A stray number on a line of its own in the
+  // middle of the passage therefore does not cut it in half.
+  let split = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const q = _pbQStart(lines[i]);
+    if (!q) continue;
+    if (q.first != null) { split = i; break; }
+    for (let j = i + 1; j < lines.length; j++) {
+      const t = lines[j].trim();
+      if (!t) continue;
+      if (PB_OPT_RE.test(t)) { split = i; }
+      break;
+    }
+    if (split >= 0) break;
+  }
+  const passage = (split < 0 ? lines : lines.slice(0, split)).join('\n').trim();
+  const subs = [];
+  if (split >= 0) {
+    let cur = null;
+    lines.slice(split).forEach(line => {
+      const q = _pbQStart(line);
+      if (q) {
+        cur = { n: q.n, options: [], correct: -1 };
+        subs.push(cur);
+        if (q.first) cur.options.push(q.first);
+        return;
+      }
+      const o = line.match(PB_OPT_RE);
+      if (o && cur) {
+        if (cur.options.length < PB_MAX_OPTS) cur.options.push(o[2]);
+        return;
+      }
+      const t = line.trim();
+      if (t && cur && cur.options.length) cur.options[cur.options.length - 1] += ' ' + t;
+    });
+  }
+  return { passage, subs: subs.filter(s => s.options.length >= 2) };
+}
+// An answer key typed the way a teacher has one: "3 3 2 2 4", "16-3 17-3",
+// "16) 3", one per line — all of it collapses to number → option. A bare run of
+// digits is read POSITIONALLY against the questions found, which is what a key
+// copied off a marking scheme usually looks like.
+function _pbParseKey(raw, subs) {
+  const s = String(raw == null ? '' : raw);
+  const out = {};
+  const paired = s.match(/\b(\d{1,3})\s*(?:[-–—:).]|\s)\s*\(?\s*([1-9])\s*\)?(?!\d)/g) || [];
+  let usedPairs = 0;
+  paired.forEach(tok => {
+    const m = tok.match(/(\d{1,3})\D+([1-9])/);
+    if (!m) return;
+    const n = parseInt(m[1], 10);
+    if (!(subs || []).some(x => x.n === n)) return;   // not a question we have
+    out[n] = parseInt(m[2], 10);
+    usedPairs++;
+  });
+  if (usedPairs) return out;
+  const bare = (s.match(/[1-9]/g) || []).map(Number);
+  (subs || []).forEach((sub, i) => { if (bare[i] != null) out[sub.n] = bare[i]; });
+  return out;
+}
+// Plain pasted text → the passage's HTML. Newlines become <br> so the shape of
+// the paragraph survives, and __word__ underlines, because the paper underlines
+// the word each sub-question is about and a paste carries no formatting.
+function _pbPassageHtml(text) {
+  return String(text == null ? '' : text).split('\n')
+    .map(l => escapeHtml(l).replace(/__([^_]+)__/g, '<u>$1</u>'))
+    .join('<br>');
+}
+// The blocks, ready to append. Kept separate from the dialog so the whole
+// shape is testable without a DOM.
+function pbBuildBlocks(parsed, intro) {
+  const out = [];
+  const head = String(intro || '').trim();
+  if (head) out.push(Object.assign(createBlock('text'), { content: _pbPassageHtml(head), part: '' }));
+  if (parsed && parsed.passage) out.push(Object.assign(createBlock('text'), { content: _pbPassageHtml(parsed.passage), part: '' }));
+  ((parsed && parsed.subs) || []).forEach(sub => {
+    const b = createBlock('mcq');
+    b.options = sub.options.map(t => ({ id: generateBlockId(), text: t }));
+    // An unpicked answer stays unpicked. Guessing one would put a tick against
+    // an option nobody chose, and the question would mark every class that ever
+    // sat it against the wrong word.
+    b.correctId = (sub.correct >= 0 && b.options[sub.correct]) ? b.options[sub.correct].id : null;
+    b.part = qPartNormalize(String(sub.n));
+    out.push(b);
+  });
+  return out;
+}
+
+// ---- the dialog -------------------------------------------------------------
+let _pbParsed = { passage: '', subs: [] };
+function pbOpen() {
+  if (!_canAuthor()) return;
+  const ov = document.getElementById('pbOverlay');
+  if (ov) ov.style.display = 'flex';
+  pbSync();
+}
+function pbClose() {
+  const ov = document.getElementById('pbOverlay');
+  if (ov) ov.style.display = 'none';
+}
+function pbSync() {
+  const raw = (document.getElementById('pbInput') || {}).value || '';
+  const keep = {};
+  (_pbParsed.subs || []).forEach(s => { if (s.correct >= 0) keep[s.n] = s.correct; });
+  _pbParsed = _pbParse(raw);
+  // The author's ticks survive a re-parse — they are re-applied by question
+  // NUMBER, so editing a typo in the passage does not blank the answer key
+  // they have just spent five minutes entering.
+  _pbParsed.subs.forEach(s => { if (keep[s.n] != null && s.options[keep[s.n]]) s.correct = keep[s.n]; });
+  pbRender();
+}
+function pbApplyKey() {
+  const raw = (document.getElementById('pbKey') || {}).value || '';
+  const map = _pbParseKey(raw, _pbParsed.subs);
+  let hit = 0;
+  _pbParsed.subs.forEach(s => {
+    const pick = map[s.n];
+    if (pick != null && s.options[pick - 1]) { s.correct = pick - 1; hit++; }
+  });
+  pbRender();
+  showToast(hit ? `🔑 Filled ${hit} answer${hit === 1 ? '' : 's'}` : 'Nothing in that key matched these question numbers', hit ? 'success' : 'error');
+}
+function pbSetCorrect(n, idx) {
+  const s = (_pbParsed.subs || []).find(x => x.n === n);
+  if (s) s.correct = parseInt(idx, 10);
+  pbRender();
+}
+function pbRender() {
+  const host = document.getElementById('pbPreview');
+  if (!host) return;
+  const subs = _pbParsed.subs || [];
+  const unset = subs.filter(s => s.correct < 0).length;
+  const foot = document.getElementById('pbFoot');
+  if (foot) {
+    foot.innerHTML = `<span style="flex:1;font-size:0.82rem;color:var(--text-muted);line-height:1.6;">${
+      subs.length
+        ? `${subs.length} sub-question${subs.length === 1 ? '' : 's'} — parts (${subs.map(s => s.n).join(') (')})` +
+          (unset ? ` · <b style="color:var(--accent-orange,#b7791f);">${unset} still need${unset === 1 ? 's' : ''} its correct option</b>` : ' · every answer set')
+        : 'Nothing to add yet.'}</span>
+      <button class="btn btn-outline" type="button" onclick="pbClose()">Cancel</button>
+      <button class="btn btn-primary" type="button" onclick="pbInsert()"${subs.length ? '' : ' disabled'}>Add to this question</button>`;
+  }
+  if (!subs.length && !_pbParsed.passage) {
+    host.innerHTML = `<div class="pb-empty">Paste the passage and the option lists above. The passage is everything before the first question number.</div>`;
+    return;
+  }
+  const rows = subs.map(s => `
+    <div class="pb-row">
+      <div class="pb-row-n">${s.n}</div>
+      <div class="pb-row-opts">
+        ${s.options.map((o, i) => `
+          <label class="pb-opt${s.correct === i ? ' on' : ''}">
+            <input type="radio" name="pbc_${s.n}" ${s.correct === i ? 'checked' : ''} onchange="pbSetCorrect(${s.n},${i})">
+            <span><b>(${i + 1})</b> ${escapeHtml(o)}</span>
+          </label>`).join('')}
+      </div>
+    </div>`).join('');
+  host.innerHTML =
+    (_pbParsed.passage ? `<div class="pb-sec-label">Passage</div><div class="pb-passage">${_pbPassageHtml(_pbParsed.passage)}</div>` : '')
+    + (subs.length ? `<div class="pb-sec-label">Sub-questions — tick the correct option for each</div>${rows}` : '');
+}
+function pbInsert() {
+  const subs = _pbParsed.subs || [];
+  if (!subs.length) { showToast('Nothing to add — paste the option lists too', 'error'); return; }
+  const intro = (document.getElementById('pbIntro') || {}).value || '';
+  const made = pbBuildBlocks(_pbParsed, intro);
+  if (!made.length) { showToast('Nothing to add', 'error'); return; }
+  blocks.push(...made);
+  renderBlocks();
+  pbClose();
+  const unset = subs.filter(s => s.correct < 0).length;
+  showToast(`📑 Added the passage and ${subs.length} sub-question${subs.length === 1 ? '' : 's'} as parts (${subs.map(s => s.n).join(') (')})`
+    + (unset ? ` · ${unset} still ${unset === 1 ? 'needs its' : 'need their'} correct option ticked` : ''),
+    unset ? 'info' : 'success');
+}
+
 // ---- One-off migration: typed "a)" markers → official parts --------------
 // Questions written before parts existed carry the marker as characters at the
 // front of a text block. This finds them, and the admin applies it after
@@ -13301,7 +13625,23 @@ function doPrintWorksheetOpen() {
           }
           break;
         }
+        // Same reason, and the same trap one step worse: the student rendering
+        // of a cloze is a draggable word bank over a passage of drop targets.
+        case 'clozebank': {
+          if (cbHasBlanks(block)) {
+            qHtml += cbPrintHtml(block);
+            _pushAnswerKeySection(qSections, 'Comprehension cloze', cbAnswerKeyText(block), bPart);
+          } else {
+            qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
+          }
+          break;
+        }
         default: {
+          // A non-text block that OPENS a part prints its label too. An MCQ can
+          // open one (see QPART_OPENER_TYPES), and without this the paper shows
+          // four bare options while the answer key calls them question 16.
+          const ownP = qPartNormalize(block.part);
+          if (ownP) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownP))}</span></div>`;
           qHtml += renderImportedBlockStudent(block);
           // The correct option, an answer line's answer and a 🔑 answer-key
           // block all belong on the key. Without them an MCQ-only question
@@ -19058,6 +19398,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   const items = [];
   const mcqItems = [];
   const fbBlocks = [];
+  const cbBlocks = [];
   const isAnnot = !!(q && q.annotation);
   let annotCount = 0;
   // Blocks are grouped into visual PARTS: a run of question content (text,
@@ -19080,8 +19421,14 @@ function buildOpenBody(q, containerSel, markCfg) {
   q.blocks.forEach(block => {
     const pLab = pOf(block);
     switch (block.type) {
-      case 'mcq':
+      case 'mcq': {
+        // A numbered sub-question is its own card, the way the paper sets one
+        // question per block of options — otherwise five option lists run
+        // together into a single wall under one heading.
+        const mcqPart = qBlockOpensPart(block);
+        if (mcqPart && cur && cur.hasAnswer) cur = null;
         addAnswer(
+          (mcqPart ? _qpTextHtml(mcqPart, '') : '') +
           renderImportedBlockStudent(block, q) +
           _partActionsHtml(containerSel, 'mcq', block.id) +
           `<div class="mcq-feedback" data-mcq-fb="${block.id}" style="margin:2px 0 4px;"></div>`
@@ -19091,6 +19438,7 @@ function buildOpenBody(q, containerSel, markCfg) {
           options: (block.options || []).map((o, idx) => ({ letter: String(idx + 1), text: stripHtml(o.text || ''), id: o.id, correct: block.correctId === o.id }))
         });
         break;
+      }
       case 'text':
         // An official part label starts a new card outright; otherwise fall
         // back to the old heuristic (a text block after an answer area).
@@ -19163,6 +19511,22 @@ function buildOpenBody(q, containerSel, markCfg) {
         );
         break;
       }
+      case 'clozebank': {
+        // Each blank is an ITEM, exactly as fill-in-the-blank registers its
+        // own, so the score, the mistake log and "have all the parts been
+        // marked?" all count a cloze without knowing what one is.
+        const answers = _cbBlanks(block);
+        if (!answers.length) { add(`<div class="cb-passage">${escapeHtml(stripHtml(block.text || ''))}</div>`); break; }
+        const start = _cbStart(block);
+        const oidxs = answers.map((a, i) => {
+          const oidx = items.length;
+          items.push({ label: [pOf(block), 'Blank ' + (start + i)].filter(Boolean).join(' '), model: a, block, field: 'text' });
+          return oidx;
+        });
+        cbBlocks.push({ blockId: block.id, oidxs, answers, startNum: start });
+        addAnswer(cbStudentHtml(block, containerSel, oidxs));
+        break;
+      }
       case 'explanation':
       case 'widget':
         break; // hidden until the student has answered (see showExplanation)
@@ -19184,7 +19548,10 @@ function buildOpenBody(q, containerSel, markCfg) {
   // get one softly-bordered card per part so the structure is obvious.
   const solo = sections.length <= 1;
   let html = sections.map(s => `<div class="qp-part${solo ? ' solo' : ''}">${s.html}</div>`).join('');
-  const fbItemCount = fbBlocks.reduce((s, b) => s + b.oidxs.length, 0);
+  // A cloze is answered by dragging, never by writing on paper, so its blanks
+  // count with the fill-in-the-blank ones: both keep the "photo of your written
+  // work" bar away from a question that has nothing to photograph.
+  const fbItemCount = fbBlocks.concat(cbBlocks).reduce((s, b) => s + b.oidxs.length, 0);
   if (annotCount) {
     // Each annotation pad carries its own Check / AI Check bar; just add the
     // how-to hint once at the end instead of the photo bar / "nothing" note.
@@ -19200,6 +19567,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   _openItemsStore[containerSel] = items;
   _openMcqStore[containerSel] = mcqItems;
   _fbStore[containerSel] = fbBlocks;
+  _cbStore[containerSel] = cbBlocks;
   _openQStore[containerSel] = q;
   _openSurfaceCfg[containerSel] = markCfg || {};
   _openPartResults[containerSel] = {};
@@ -19827,13 +20195,18 @@ function _fbAnswerKeyText(block) {
 }
 
 // ---- editor: clickable word chips + live student preview ----
-function _fbChipsHtml(id, text) {
+// `fn` is the toggle the chips call. The comprehension cloze uses the same
+// chips and the same [[markup]] but its own textarea and preview, so it passes
+// its own — hardcoding fbToggleToken here made every cloze chip a no-op that
+// looked exactly like a working one.
+function _fbChipsHtml(id, text, fn) {
   const toks = _fbSplitTokens(text);
+  const call = fn || 'fbToggleToken';
   if (!toks.length) return '<span style="font-size:0.8rem;color:var(--text-muted);">Type a sentence above, then click words here to blank them.</span>';
   return toks.map((t, i) => {
     const bm = t.match(/^\W*\[\[([\s\S]+?)\]\]\W*$/);
     const label = bm ? bm[1] : t;
-    return `<span class="fb-chip${bm ? ' on' : ''}" onclick="fbToggleToken('${id}',${i})" title="${bm ? 'Click to un-blank' : 'Click to make this a blank'}">${escapeHtml(label)}</span>`;
+    return `<span class="fb-chip${bm ? ' on' : ''}" onclick="${call}('${id}',${i})" title="${bm ? 'Click to un-blank' : 'Click to make this a blank'}">${escapeHtml(label)}</span>`;
   }).join(' ');
 }
 function _fbPreviewHtml(text) {
@@ -19925,6 +20298,423 @@ document.addEventListener('click', function (e) {
   const chk = e.target.closest && e.target.closest('[data-fb-check]');
   if (chk) { e.preventDefault(); fbCheck(chk.getAttribute('data-fb-check'), chk.getAttribute('data-fb-block'), chk); }
 });
+
+// =====================================================================
+// 🔤 COMPREHENSION CLOZE — one passage, a lettered word bank, drag to fill
+// =====================================================================
+// The other cloze on the paper: ten numbered blanks in a single passage and a
+// bank of words lettered (A)–(Q) above it, each usable once. The student drags
+// a word into a blank and it is struck off the bank; the paper wants the
+// LETTER written in the blank, which is why the bank skips I and O.
+//
+// It is `fillblank`'s sibling, not a variant of it, and the difference is the
+// bank. A fill-in-the-blank is marked on what the student WROTE, so it goes to
+// the AI to accept synonyms and spelling slips. Here the student picks from a
+// closed list, so the mark is exact, instant and free — and an AI pass would be
+// strictly worse: it can only turn a right answer wrong.
+//
+// Five things hold it together:
+//
+//  • **The answers ARE the bank.** `cbBank` derives the list from the blanks
+//    plus the author's distractors and sorts it, so a bank that does not
+//    contain an answer is impossible to author. A blank whose word is missing
+//    from the list is a question no student can get right, and it looks
+//    perfectly fine on screen.
+//  • **The blanks carry the paper's numbering** (`block.startNum`, 26 by
+//    default), because the passage prints "(26)" under the rule and the answer
+//    key has to say 26.
+//  • **`[[word]]` is the same markup `fillblank` uses**, parsed by the same
+//    `_fbParse`. One syntax for blanking a word, one parser, whichever block
+//    the author reaches for.
+//  • **Used-up is a RENDER of the placements, never a second list.** `_cbUsed`
+//    counts what is actually in the slots; a "struck off" flag kept beside
+//    them would be one drag away from disagreeing with the passage.
+//  • **The bank is laid out DOWN the columns**, the way the paper sets it, so
+//    (A) (B) (C) read as a column and not as a row.
+// The letters a bank may use. I and O are left out because a handwritten (I)
+// is a 1 and a handwritten (O) is a 0 — the paper says so in as many words.
+const CB_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const CB_START_DEFAULT = 26;
+const CB_COLS = 5;              // the bank grid, as the paper sets it
+const _cbStore = {};            // containerSel -> [{ blockId, oidxs, answers, startNum, bank }]
+
+function cbIsCloze(b) { return !!b && b.type === 'clozebank'; }
+function _cbBlanks(block) { return _fbParse(block && block.text).filter(p => p.type === 'blank').map(p => p.answer || ''); }
+function cbHasBlanks(block) { return cbIsCloze(block) && _cbBlanks(block).length > 0; }
+function _cbStart(block) {
+  const n = parseInt(block && block.startNum, 10);
+  return (isFinite(n) && n >= 1 && n <= 999) ? n : CB_START_DEFAULT;
+}
+function _cbNorm(s) { return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim(); }
+// The bank: every answer in the passage, plus the author's distractors, with
+// duplicates collapsed and the whole list sorted so its order gives nothing
+// away. Deriving it — rather than storing it — is what makes a bank that is
+// missing one of its own answers unauthorable.
+function cbBank(block) {
+  const seen = new Set();
+  const out = [];
+  const add = w => {
+    const t = String(w == null ? '' : w).replace(/\s+/g, ' ').trim();
+    if (!t || seen.has(_cbNorm(t))) return;
+    seen.add(_cbNorm(t));
+    out.push(t);
+  };
+  _cbBlanks(block).forEach(add);
+  (Array.isArray(block && block.extras) ? block.extras : []).forEach(add);
+  if (block && block.sortBank === false) return out.slice(0, CB_LETTERS.length);
+  out.sort((a, b) => _cbNorm(a).localeCompare(_cbNorm(b)));
+  return out.slice(0, CB_LETTERS.length);
+}
+// letter -> word and word -> letter, both off the one bank so they cannot drift.
+function cbBankMap(block) {
+  const bank = cbBank(block);
+  const byLetter = {}, byWord = {};
+  bank.forEach((w, i) => {
+    const L = CB_LETTERS[i];
+    if (!L) return;
+    byLetter[L] = w;
+    if (!(_cbNorm(w) in byWord)) byWord[_cbNorm(w)] = L;
+  });
+  return { bank, byLetter, byWord };
+}
+// The instruction line, generated from what the passage actually holds so it
+// can never drift from it. An author who types their own keeps theirs.
+function cbIntro(block) {
+  const own = String((block && block.intro) || '').trim();
+  if (own) return own;
+  const n = _cbBlanks(block).length;
+  if (!n) return '';
+  const a = _cbStart(block), b = a + n - 1;
+  return `There are ${n} blank${n === 1 ? '' : 's'}, numbered ${a} to ${b}, in the passage below. From the list of words given, choose the most suitable word for each blank. Write its letter (A to ${CB_LETTERS[Math.max(0, cbBank(block).length - 1)] || 'Q'}) in the blank. The letters (I) and (O) have been omitted to avoid confusion during marking.`;
+}
+// Down the columns, the way the paper prints it: (A) (B) (C) is a column, not
+// a row. `rows` is ceil(n / CB_COLS), and the cell at (r, c) is item
+// r + c*rows — reading across a row therefore skips a column's worth.
+function _cbGrid(bank) {
+  const n = bank.length;
+  const rows = Math.max(1, Math.ceil(n / CB_COLS));
+  const out = [];
+  for (let r = 0; r < rows; r++) {
+    const row = [];
+    for (let c = 0; c < CB_COLS; c++) {
+      const i = r + c * rows;
+      if (i < n) row.push({ letter: CB_LETTERS[i], word: bank[i], i });
+    }
+    out.push(row);
+  }
+  return out;
+}
+// How many columns the grid actually fills. 16 words over 5 columns is 4 rows,
+// and 4 rows only reaches 4 columns — a fixed 20% cell would then leave the
+// bank stopping a fifth short of its own box.
+function _cbCols(bank) {
+  const rows = Math.max(1, Math.ceil(bank.length / CB_COLS));
+  return Math.max(1, Math.min(CB_COLS, Math.ceil(bank.length / rows)));
+}
+
+// ---- the student's passage: a bank to drag from and numbered slots ---------
+function _cbBankHtml(block, blockId, interactive) {
+  const { bank } = cbBankMap(block);
+  if (!bank.length) return '';
+  const w = (100 / _cbCols(bank)).toFixed(2);
+  const rows = _cbGrid(bank).map(row =>
+    `<tr>${row.map(cell =>
+      `<td style="width:${w}%"><span class="cb-word${interactive ? '' : ' static'}"${interactive ? ` draggable="true" data-cb-word="${escapeHtml(cell.letter)}" data-cb-block="${escapeHtml(blockId)}" tabindex="0" role="button"` : ''}
+        ><b>(${escapeHtml(cell.letter)})</b> ${escapeHtml(cell.word)}</span></td>`).join('')}</tr>`).join('');
+  return `<div class="cb-bank" data-cb-bank="${escapeHtml(blockId)}">
+      <div class="cb-bank-rule">EACH WORD CAN BE USED ONLY ONCE.</div>
+      <table class="cb-bank-grid"><tbody>${rows}</tbody></table>
+    </div>`;
+}
+// One numbered slot. The number sits UNDER the rule, as it does on the paper,
+// so it is positioned rather than flowed — a number on its own line would put
+// a gap through the middle of every sentence that carries a blank.
+function _cbSlotHtml(oidx, num, blockId) {
+  return `<span class="cb-slot" data-cb-slot="${oidx}" data-cb-block="${escapeHtml(blockId)}" data-cb-num="${num}" tabindex="0" role="button"
+      aria-label="Blank ${num}"><span class="cb-slot-fill"></span><span class="cb-slot-num">(${num})</span></span>`;
+}
+// The student's rendering. Every blank becomes a drop target and every bank
+// word a draggable chip; nothing about the passage's own wording moves.
+function cbStudentHtml(block, containerSel, oidxs) {
+  const parts = _fbParse(block.text || '');
+  const start = _cbStart(block);
+  let k = 0;
+  const body = parts.map(p => p.type === 'blank'
+    ? _cbSlotHtml(oidxs[k], start + (k++), block.id)
+    : escapeHtml(p.text)).join('');
+  const intro = cbIntro(block);
+  return `<div class="cb-wrap" data-cb-wrap="${escapeHtml(block.id)}">
+      ${intro ? `<div class="cb-intro">${escapeHtml(intro)}</div>` : ''}
+      ${_cbBankHtml(block, block.id, true)}
+      <div class="cb-passage">${body}</div>
+      <div class="cb-actions">
+        <button type="button" class="btn btn-check" data-cb-check="${containerSel}" data-cb-blk="${escapeHtml(block.id)}">✓ Check answers</button>
+        <button type="button" class="btn btn-ghost" data-cb-clear="${containerSel}" data-cb-blk="${escapeHtml(block.id)}">↺ Clear all</button>
+        <span class="cb-hint">Drag a word into a blank — or tap the word, then tap the blank. Tap a filled blank to take the word back.</span>
+      </div>
+      <div class="cb-feedback" data-cb-fb="${escapeHtml(block.id)}"></div>
+    </div>`;
+}
+// What is in the slots right now, keyed by slot. The bank's struck-off state is
+// derived from this and never stored beside it — a flag kept in parallel is one
+// drag away from disagreeing with the passage the student can see.
+function _cbUsed(wrap) {
+  const used = new Set();
+  wrap.querySelectorAll('.cb-slot').forEach(s => { const L = s.dataset.cbLetter; if (L) used.add(L); });
+  return used;
+}
+function _cbSyncBank(wrap) {
+  const used = _cbUsed(wrap);
+  wrap.querySelectorAll('[data-cb-word]').forEach(w => w.classList.toggle('used', used.has(w.dataset.cbWord)));
+}
+function _cbWrapOf(el) { return el && el.closest ? el.closest('[data-cb-wrap]') : null; }
+function _cbBlockOf(containerSel, blockId) {
+  const q = _openQStore[containerSel];
+  return (((q && q.blocks) || []).find(b => b && b.id === blockId)) || null;
+}
+// Put a bank letter into a slot. A letter already sitting in ANOTHER slot is
+// lifted out of it first: the bank allows one use of each word, so moving a
+// word must move it, not clone it.
+function _cbPlace(wrap, slot, letter, block) {
+  if (!wrap || !slot || !letter) return;
+  const map = cbBankMap(block);
+  const word = map.byLetter[letter];
+  if (word == null) return;
+  if (block.once !== false) {
+    wrap.querySelectorAll('.cb-slot').forEach(s => { if (s !== slot && s.dataset.cbLetter === letter) _cbClearSlot(s); });
+  }
+  slot.dataset.cbLetter = letter;
+  slot.classList.add('filled');
+  slot.classList.remove('right', 'wrong');
+  const fill = slot.querySelector('.cb-slot-fill');
+  if (fill) fill.textContent = '(' + letter + ') ' + word;
+  _cbSyncBank(wrap);
+}
+function _cbClearSlot(slot) {
+  if (!slot) return;
+  delete slot.dataset.cbLetter;
+  slot.classList.remove('filled', 'right', 'wrong');
+  const fill = slot.querySelector('.cb-slot-fill');
+  if (fill) fill.textContent = '';
+}
+// The tapped-and-waiting word lives ON the passage element, not in a map keyed
+// by block id: the same block can be on screen in two surfaces at once (the
+// worksheet preview beside the practice pane), and a shared key would let a tap
+// in one drop a word into the other.
+function _cbSetPicked(wrap, letter) {
+  if (!wrap) return;
+  if (letter) wrap.dataset.cbPicked = letter; else delete wrap.dataset.cbPicked;
+  wrap.querySelectorAll('[data-cb-word]').forEach(w => w.classList.toggle('picked', !!letter && w.dataset.cbWord === letter));
+}
+
+// ---- marking: exact, instant and free --------------------------------------
+// A closed list of words means the mark is decidable here. Sending it to the
+// AI could only make it worse — the student picked (D), the answer is (D), and
+// a model asked to judge that can still say no.
+function cbCheck(containerSel, blockId, btn) {
+  const c = document.querySelector(containerSel); if (!c) return;
+  const store = (_cbStore[containerSel] || []).find(x => x.blockId === blockId); if (!store) return;
+  const wrap = c.querySelector('[data-cb-wrap="' + blockId + '"]'); if (!wrap) return;
+  const block = _cbBlockOf(containerSel, blockId);
+  const map = block ? cbBankMap(block) : { byLetter: {}, byWord: {} };
+  const slots = Array.from(wrap.querySelectorAll('.cb-slot'));
+  if (!slots.some(s => s.dataset.cbLetter)) { showToast('Drag a word into a blank first', 'info'); return; }
+  let correct = 0;
+  const wrong = [];
+  slots.forEach((slot, i) => {
+    const model = store.answers[i] || '';
+    const wantL = map.byWord[_cbNorm(model)] || '';
+    const gotL = slot.dataset.cbLetter || '';
+    // Matched on the WORD, not the letter, so a bank that happens to list the
+    // same word twice accepts either of its letters.
+    const gotW = gotL ? (map.byLetter[gotL] || '') : '';
+    const ok = !!gotW && _cbNorm(gotW) === _cbNorm(model);
+    if (ok) correct++; else wrong.push({ num: store.startNum + i, letter: wantL, word: model });
+    slot.classList.toggle('right', ok);
+    slot.classList.toggle('wrong', !ok);
+    _setPartResult(containerSel, 'open:' + store.oidxs[i], ok ? 'correct' : 'incorrect', ok ? 1 : 0, model, gotW);
+  });
+  const fb = wrap.querySelector('[data-cb-fb="' + blockId + '"]');
+  if (fb) {
+    fb.innerHTML = `<span style="font-weight:700;color:${correct === slots.length ? 'var(--primary)' : 'var(--accent-orange)'};">${correct} / ${slots.length} correct</span>` +
+      (wrong.length
+        ? `<div class="cb-fb-list">${wrong.map(w => `<span><b>${w.num}.</b> (${escapeHtml(w.letter)}) ${escapeHtml(w.word)}</span>`).join('')}</div>`
+        : ' 🎉');
+  }
+  _checkAllPartsMarked(containerSel);
+}
+function cbClearAll(containerSel, blockId) {
+  const c = document.querySelector(containerSel); if (!c) return;
+  const wrap = c.querySelector('[data-cb-wrap="' + blockId + '"]'); if (!wrap) return;
+  wrap.querySelectorAll('.cb-slot').forEach(_cbClearSlot);
+  _cbSetPicked(wrap, '');
+  _cbSyncBank(wrap);
+  const fb = wrap.querySelector('[data-cb-fb="' + blockId + '"]');
+  if (fb) fb.innerHTML = '';
+}
+
+// ---- the one delegated listener set ----------------------------------------
+// Delegated because the passage is re-rendered by every practice surface and a
+// per-slot binding would have to be re-made on each one. Drag AND tap, because
+// a phone has no drag and a mouse expects one.
+document.addEventListener('dragstart', function (e) {
+  const w = e.target.closest && e.target.closest('[data-cb-word]');
+  if (!w) return;
+  // A word already in the passage is still draggable, and dropping it MOVES it
+  // (see _cbPlace, which lifts it out of the slot it was in). Refusing the drag
+  // because it is struck off would make the only way to correct blank 26 a tap
+  // on the bank to release it and a second drag to place it again.
+  e.dataTransfer.setData('text/plain', 'cbword:' + w.dataset.cbWord);
+  e.dataTransfer.effectAllowed = 'move';
+});
+document.addEventListener('dragover', function (e) {
+  const s = e.target.closest && e.target.closest('.cb-slot');
+  if (!s) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  s.classList.add('over');
+});
+document.addEventListener('dragleave', function (e) {
+  const s = e.target.closest && e.target.closest('.cb-slot');
+  if (s) s.classList.remove('over');
+});
+document.addEventListener('drop', function (e) {
+  const s = e.target.closest && e.target.closest('.cb-slot');
+  if (!s) return;
+  s.classList.remove('over');
+  const raw = String(e.dataTransfer.getData('text/plain') || '');
+  if (raw.indexOf('cbword:') !== 0) return;
+  e.preventDefault();
+  const wrap = _cbWrapOf(s); if (!wrap) return;
+  const block = _cbBlockOf(_cbSelOf(wrap), s.dataset.cbBlock);
+  if (block) _cbPlace(wrap, s, raw.slice(7), block);
+});
+document.addEventListener('click', function (e) {
+  const chk = e.target.closest && e.target.closest('[data-cb-check]');
+  if (chk) { e.preventDefault(); cbCheck(chk.getAttribute('data-cb-check'), chk.getAttribute('data-cb-blk'), chk); return; }
+  const clr = e.target.closest && e.target.closest('[data-cb-clear]');
+  if (clr) { e.preventDefault(); cbClearAll(clr.getAttribute('data-cb-clear'), clr.getAttribute('data-cb-blk')); return; }
+  const word = e.target.closest && e.target.closest('[data-cb-word]');
+  if (word) {
+    e.preventDefault();
+    const wrap = _cbWrapOf(word); if (!wrap) return;
+    if (word.classList.contains('used')) {
+      // Tapping a struck-off word takes it back out of the passage — the only
+      // other way to free it is to find which blank swallowed it.
+      wrap.querySelectorAll('.cb-slot').forEach(s => { if (s.dataset.cbLetter === word.dataset.cbWord) _cbClearSlot(s); });
+      _cbSyncBank(wrap);
+      return;
+    }
+    _cbSetPicked(wrap, (wrap.dataset.cbPicked || '') === word.dataset.cbWord ? '' : word.dataset.cbWord);
+    return;
+  }
+  const slot = e.target.closest && e.target.closest('.cb-slot');
+  if (slot) {
+    e.preventDefault();
+    const wrap = _cbWrapOf(slot); if (!wrap) return;
+    const sel = _cbSelOf(wrap);
+    const block = _cbBlockOf(sel, slot.dataset.cbBlock);
+    const picked = wrap.dataset.cbPicked || '';
+    if (picked && block) { _cbPlace(wrap, slot, picked, block); _cbSetPicked(wrap, ''); }
+    else if (slot.dataset.cbLetter) { _cbClearSlot(slot); _cbSyncBank(wrap); }
+    return;
+  }
+});
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const t = e.target;
+  if (!t || !t.closest) return;
+  if (t.closest('[data-cb-word]') || t.closest('.cb-slot')) { e.preventDefault(); t.click(); }
+});
+// Which surface a passage belongs to. The wrap does not carry the container
+// selector — the same block id can be on screen in two surfaces at once — so
+// it is found by asking each registered surface whether it contains this node.
+function _cbSelOf(wrap) {
+  for (const sel of Object.keys(_cbStore || {})) {
+    const c = document.querySelector(sel);
+    if (c && c.contains(wrap)) return sel;
+  }
+  return '';
+}
+
+// ---- on PAPER --------------------------------------------------------------
+// The blanks print BLANK and the bank prints above them, boxed, exactly as the
+// paper sets it. The same trap `fillblank` fell into applies here: falling
+// through to the student rendering would print a draggable word bank and a
+// passage full of drop targets.
+function cbPrintHtml(block) {
+  const parts = _fbParse(block.text || '');
+  if (!parts.length) return '';
+  const start = _cbStart(block);
+  let k = 0;
+  const body = parts.map(p => p.type === 'blank'
+    ? `<span class="print-cb-slot"><span class="print-cb-rule">&nbsp;</span><span class="print-cb-num">(${start + (k++)})</span></span>`
+    : escapeHtml(p.text)).join('');
+  const { bank } = cbBankMap(block);
+  const cw = (100 / _cbCols(bank)).toFixed(2);
+  const grid = _cbGrid(bank).map(row =>
+    `<tr>${row.map(c => `<td style="width:${cw}%"><b>(${escapeHtml(c.letter)})</b> ${escapeHtml(c.word)}</td>`).join('')}</tr>`).join('');
+  const intro = cbIntro(block);
+  return (intro ? `<div class="print-cb-intro">${escapeHtml(intro)}</div>` : '')
+    + (bank.length ? `<div class="print-cb-bank"><div class="print-cb-rule-note">EACH WORD CAN BE USED ONLY ONCE.</div>
+        <table class="print-cb-grid"><tbody>${grid}</tbody></table></div>` : '')
+    + `<div class="print-text-block print-cb-passage">${body}</div>`;
+}
+// ---- the editor -------------------------------------------------------------
+// The preview is the READ-ONLY twin of the student rendering: the same bank
+// grid and the same numbered slots, with the answers shown in place, so the
+// author is looking at the page the class will get rather than at [[markup]].
+function _cbEditorPreviewHtml(block) {
+  const parts = _fbParse(block.text || '');
+  if (!parts.length) return '<span style="color:var(--text-muted);font-size:0.82rem;">Paste a passage above and blank a few words.</span>';
+  const map = cbBankMap(block);
+  const start = _cbStart(block);
+  let k = 0;
+  const body = parts.map(p => {
+    if (p.type !== 'blank') return escapeHtml(p.text);
+    const L = map.byWord[_cbNorm(p.answer)] || '?';
+    const n = start + (k++);
+    return `<span class="cb-slot filled static"><span class="cb-slot-fill">(${escapeHtml(L)}) ${escapeHtml(p.answer)}</span><span class="cb-slot-num">(${n})</span></span>`;
+  }).join('');
+  const intro = cbIntro(block);
+  return (intro ? `<div class="cb-intro">${escapeHtml(intro)}</div>` : '')
+    + _cbBankHtml(block, block.id, false)
+    + `<div class="cb-passage">${body}</div>`;
+}
+function cbSyncEditor(id) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  const c = document.getElementById('cbChips_' + id); if (c) c.innerHTML = _fbChipsHtml(id, b.text || '', 'cbToggleToken');
+  const p = document.getElementById('cbPrev_' + id); if (p) p.innerHTML = _cbEditorPreviewHtml(b);
+}
+// Distractors, typed one per line or comma-separated. Stored as a flat array of
+// strings — Firestore rejects a nested array, and _firestoreSafeQuestion only
+// rescues the table block's rows.
+function cbSetExtras(id, raw) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  b.extras = String(raw || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  cbSyncEditor(id);
+}
+// `fbToggleToken` edits `blocks[i].text` and writes back into `fbText_<id>`, so
+// a cloze needs the same round trip against its own textarea and preview.
+function cbToggleToken(id, idx) {
+  fbToggleToken(id, idx);
+  const ta = document.getElementById('cbText_' + id);
+  const b = blocks.find(x => x.id === id);
+  if (ta && b) ta.value = b.text || '';
+  cbSyncEditor(id);
+}
+
+// Every blank on the key, as the paper wants it read: the number, the letter
+// the student had to write, and the word it stands for.
+function cbAnswerKeyText(block) {
+  const map = cbBankMap(block);
+  const start = _cbStart(block);
+  const rows = _cbBlanks(block).map((w, i) => {
+    const L = map.byWord[_cbNorm(w)] || '?';
+    return `${start + i}. (${L}) ${w}`;
+  });
+  return rows.length ? rows.join('   ') : '';
+}
 
 // =====================================================================
 // PHOTO ANSWER — one photo of the whole page of written answers, sent to the
@@ -20080,6 +20870,12 @@ function resetOpenAnswersIn(containerSel, scoreElId) {
   // they are an answer key on the second attempt: hover the four options and
   // the one that "fits" is the one to tick.
   document.querySelectorAll(containerSel + ' .mcq-block').forEach(whDisarm);
+  document.querySelectorAll(containerSel + ' [data-cb-wrap]').forEach(w => {
+    w.querySelectorAll('.cb-slot').forEach(_cbClearSlot);
+    _cbSetPicked(w, '');
+    _cbSyncBank(w);
+    const fb = w.querySelector('[data-cb-fb]'); if (fb) fb.innerHTML = '';
+  });
   const c = document.querySelector(containerSel);
   if (c) c.querySelectorAll('.post-explanation').forEach(el => el.remove());
   // Wipe any diagram annotations (strokes + text labels + feedback) too.
@@ -21535,8 +22331,10 @@ function questionHasMarkableAnswer(q) {
   // Annotation (tick & label) questions are markable via AI Check as long as
   // they carry a diagram to annotate.
   if (q && q.annotation && ((q.blocks) || []).some(b => b && b.type === 'image' && b.url)) return true;
-  // A fill-in-the-blank block counts only once it actually has blanks marked.
-  if (((q && q.blocks) || []).some(b => _fbHasBlanks(b))) return true;
+  // A fill-in-the-blank block counts only once it actually has blanks marked,
+  // and a comprehension cloze the same — a passage with no [[word]] blanked is
+  // just a paragraph, and offering "Try it" on one leads to a dead end.
+  if (((q && q.blocks) || []).some(b => _fbHasBlanks(b) || cbHasBlanks(b))) return true;
   return ((q && q.blocks) || []).some(b => b && ['answer', 'plainanswer', 'openLines', 'workingSpace', 'mcq'].includes(b.type));
 }
 
@@ -22305,7 +23103,21 @@ function buildWorksheetHtml(selected, worksheetTitle, opts) {
             }
             break;
           }
+          case 'clozebank': {
+            if (cbHasBlanks(block)) {
+              qHtml += cbPrintHtml(block);
+              _pushAnswerKeySection(qSections, 'Comprehension cloze', cbAnswerKeyText(block), bPart);
+            } else {
+              qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
+            }
+            break;
+          }
           default: {
+            // A non-text block that OPENS a part prints its label too. An MCQ can
+            // open one (see QPART_OPENER_TYPES), and without this the paper shows
+            // four bare options while the answer key calls them question 16.
+            const ownP = qPartNormalize(block.part);
+            if (ownP) qHtml += `<div class="print-text-block print-has-part"><span class="print-part-label">${escapeHtml(qPartLabel(ownP))}</span></div>`;
             qHtml += renderImportedBlockStudent(block);
             // Unconditional, exactly as doPrintWorksheetOpen does it: an MCQ's
             // correct option is the answer to that question, not an optional
@@ -23015,6 +23827,8 @@ function _wsQeBlockSummary(b) {
     case 'workingSpace': return 'Working space';
     case 'answerLine': return 'Answer line';
     case 'fillblank': return 'Fill in the blanks';
+    case 'clozebank': return _cbBlanks(b).length + ' numbered blank' + (_cbBlanks(b).length === 1 ? '' : 's') + ' · '
+      + cbBank(b).length + '-word bank';
     case 'explanation': return 'Explanation (answer key)';
     case 'widget': return 'Interactive widget (screen-only, not printed)';
     case 'answerKey': return 'Answer key';
@@ -27839,6 +28653,7 @@ function _docQParts(q) {
     else if (b.type === 'answer') { p.answers.push({ kind: 'cer', claim: stripHtml(b.claim || ''), evidence: stripHtml(b.evidence || ''), reasoning: stripHtml(b.reasoning || '') }); scanInline(b.claim); scanInline(b.evidence); scanInline(b.reasoning); }
     else if (b.type === 'plainanswer') { p.answers.push({ kind: 'plain', text: stripHtml(b.content || '') }); scanInline(b.content); }
     else if (b.type === 'fillblank') { const fp = _fbParse(b.text || ''); p.text += ' ' + fp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = fp.filter(x => x.type === 'blank').map(x => x.answer).join('; '); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
+    else if (b.type === 'clozebank') { const cp = _fbParse(b.text || ''); p.text += ' ' + cp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = cbAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
     else if (b.type === 'explanation') scanInline(b.content);
   });
   p.text = p.text.replace(/\s+/g, ' ').trim();
@@ -28364,6 +29179,11 @@ function _cqRepr(q) {
       case 'plainanswer': lines.push('Model answer: ' + stripHtml(b.content || '')); break;
       case 'answerLine': lines.push('Answer line' + (b.label ? ' (' + stripHtml(b.label) + ')' : '') + ': ' + stripHtml(b.answer || '')); break;
       case 'fillblank': lines.push('Fill in the blanks: ' + stripHtml(b.text || '')); break;
+      case 'clozebank':
+        lines.push('Comprehension cloze, blanks numbered from ' + _cbStart(b) + '. Word bank: '
+          + cbBank(b).map((w, i) => '(' + CB_LETTERS[i] + ') ' + w).join(', ')
+          + '\nPassage with the answers shown in [[brackets]]: ' + stripHtml(b.text || ''));
+        break;
       case 'explanation': lines.push('Explanation given to the student: ' + stripHtml(b.content || '')); break;
       default: break;
     }
@@ -35177,6 +35997,17 @@ window.exportActivityAudit = exportActivityAudit;
 window.setBlockPart = setBlockPart;
 window.toggleBlockPartScope = toggleBlockPartScope;
 window.autoNumberParts = autoNumberParts;
+window.autoNumberPartsFromInput = autoNumberPartsFromInput;
+window.pbOpen = pbOpen;
+window.pbClose = pbClose;
+window.pbSync = pbSync;
+window.pbApplyKey = pbApplyKey;
+window.pbSetCorrect = pbSetCorrect;
+window.pbInsert = pbInsert;
+window.saveBlockFlag = saveBlockFlag;
+window.cbSyncEditor = cbSyncEditor;
+window.cbSetExtras = cbSetExtras;
+window.cbToggleToken = cbToggleToken;
 window.clearAllParts = clearAllParts;
 window.qPartScanBank = qPartScanBank;
 window.qPartAutoConvertInBackground = qPartAutoConvertInBackground;

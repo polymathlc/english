@@ -150,6 +150,83 @@ Topic lists carry **no P3–P6 headings** — not the bank filter, the authoring
 owned by a year the way a Science one is. The level each topic is filed under is
 still live (it gates what a student may be served); it is simply not announced.
 
+## The two comprehension formats — one passage, many questions
+
+Both arrived in v1.6.0 and both exist because the block editor could not express
+a **passage with its own sub-questions as ONE bank question**.
+
+### Parts may be NUMBERS
+
+`qPartNormalize` accepts **1–999** as well as a letter. A comprehension passage
+prints "(16)" against an underlined word and the option list below answers it,
+so relabelling those (a) (b) (c) severs the only link between the two.
+
+- **Detection is deliberately NOT extended.** `qPartDetect` still matches
+  letters only — a number at the start of a line is a question number, a
+  quantity or a year far more often than it is a part. Assigning is a decision;
+  detecting is a guess, which is why `QPART_ASSIGN` was already longer than
+  `QPART_LETTERS`.
+- The letter branch now requires **length 1**: `indexOf` on a *string* matches
+  substrings, so `'ab'` used to come back as a valid part — one no picker could
+  show and no key could label.
+- `autoNumberParts(startAt)` takes an optional start; the parts bar's **Number
+  from** box feeds it, and blank falls back to the letters.
+- **`QPART_OPENER_TYPES` is `['text', 'mcq']`.** An MCQ joins because these
+  papers have no text block to hang the part on — the sub-question is nothing
+  but its four options. Both print paths and `buildOpenBody` print the label for
+  an MCQ that opens a part, which is what makes that safe (the original
+  text-only rule existed so a part could never be labelled on the key with
+  nothing marking it on the paper).
+
+### 📑 The passage builder (`pb*`)
+
+Paste the passage and the option lists as they are on the paper; out comes one
+text block plus one MCQ per sub-question, each opening its numeric part.
+
+- **The parse is deterministic — there is no AI in it.** A wrong guess here is
+  not a wrong answer, it is four options quietly filed under the wrong number.
+- A question opens on a **bare** number at the start of a line; an option number
+  is **parenthesised and single-digit**. That one rule is what stops the "(16)"
+  markers inside the passage reading as options, and stops "20,000 animals
+  across 1,000 species" reading as question 20.
+- A line that is neither **continues the option above it** — an option long
+  enough to wrap arrives as two lines, and dropping the tail loses half the
+  answer with nothing looking wrong.
+- **An unticked sub-question is saved with no correct option.** Guessing one
+  marks every class that ever sits it against the wrong word.
+
+### 🔤 The comprehension cloze (`cb*`, block type `clozebank`)
+
+One passage, numbered blanks, and a bank of words lettered (A)–(Q) above it.
+The student drags a word into a blank and it is struck off.
+
+- It is **`fillblank`'s sibling, not a variant**. A fill-in-the-blank is marked
+  on what the student *wrote*, so it goes to the AI for synonyms and spelling.
+  Here the student picks from a closed list, so the mark is exact, instant and
+  free — an AI pass could only turn a right answer wrong.
+- **The answers ARE the bank**: `cbBank` derives the list from the blanks plus
+  the author's distractors, so a bank missing one of its own answers cannot be
+  authored. It renders perfectly, prints perfectly and is unanswerable.
+- `[[word]]` is **the same markup `fillblank` uses**, parsed by the same
+  `_fbParse`. `_fbChipsHtml` takes the toggle to call, because hardcoding
+  `fbToggleToken` made every cloze chip a no-op that looked like a working one.
+- **`CB_LETTERS` skips I and O** — a handwritten (I) is a 1 and a handwritten
+  (O) is a 0. The paper says so in as many words, and `cbIntro` generates that
+  sentence from the passage so it cannot drift from it.
+- **Struck-off is a RENDER of the placements** (`_cbUsed`), never a second list;
+  a flag kept beside them is one drag away from disagreeing with the passage.
+  The tapped-and-waiting word lives on the element, not in a map keyed by block
+  id — the same block can be on screen in two surfaces at once.
+- A **used word is still draggable**, and dropping it MOVES it. Refusing the
+  drag would make the only way to correct blank 26 a tap to release and a second
+  drag to place.
+- **The bank is read DOWN the columns**, as the paper sets it, and the cells are
+  sized from the columns actually filled (`_cbCols`).
+- Both print builders carry an **explicit `case 'clozebank'`** for exactly the
+  reason `fillblank` does, one step worse: falling through to the student
+  rendering prints a draggable word bank over a passage of drop targets.
+- Run **`node tools/passage-cloze-tests.mjs`** after touching any of it.
+
 ## Word & grammar help on a marked question's options
 
 `wh*` (in `app.js`, search `WORD & GRAMMAR HELP`). Once a multiple-choice
@@ -579,7 +656,7 @@ reported in chat, to know whether the deploy actually went through.
   named constant used at every call site rather than a string typed out in three
   places, and swapping the model means checking its scale first. The Science app
   (`polymathlc/cer`) carries the same pair — keep the two in step.
-- Run the seven harnesses after touching what they cover — every failure they
+- Run the eight harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
@@ -599,6 +676,11 @@ reported in chat, to know whether the deploy actually went through.
     is about. Line them up wrong and the popout still opens, still looks right
     and still reads fluently, while telling a child that "reluctantly" cannot be
     used because it is an adjective.
+  - `node tools/passage-cloze-tests.mjs` — the passage builder's parse, the
+    cloze's word bank, and the numeric part labels both rest on. A passage split
+    one line early swallows the first option list; a question number read off a
+    quantity cuts the passage in half; a bank that does not contain one of its
+    own answers renders and prints perfectly and is unanswerable.
 
 ### Two CSS traps in `index.html`
 

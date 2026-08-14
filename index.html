@@ -124,6 +124,74 @@
   #whPop .wh-dots i:nth-child(2) { animation-delay:.16s; }
   #whPop .wh-dots i:nth-child(3) { animation-delay:.32s; }
   @keyframes whBlink { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
+
+/* ---- 🔤 Comprehension cloze — the word bank and the numbered passage -------
+   Set the way the paper sets it: the instruction, then a boxed bank read DOWN
+   the columns, then the passage with a rule for every blank and its number
+   underneath. The number is POSITIONED, not flowed — a number on its own line
+   would open a gap through the middle of every sentence carrying a blank,
+   which is exactly what the paper avoids by tucking it under the rule. */
+  .cb-intro { font-size:0.9rem; line-height:1.7; margin-bottom:14px; }
+  .cb-bank { border-top:2px solid var(--text); border-bottom:2px solid var(--text); padding:14px 16px 16px; margin:0 0 22px; }
+  .cb-bank-rule { font-weight:800; font-size:0.84rem; letter-spacing:0.01em; margin-bottom:12px; }
+  .cb-bank-grid { width:100%; border-collapse:collapse; }
+  .cb-bank-grid td { padding:5px 10px 5px 0; vertical-align:top; width:20%; }
+  .cb-word { display:inline-block; padding:4px 10px; border-radius:8px; border:1px solid transparent; font-size:0.92rem; line-height:1.5; cursor:grab; user-select:none; transition:background .12s ease, border-color .12s ease, opacity .12s ease; }
+  .cb-word b { font-weight:700; margin-right:3px; }
+  .cb-word:hover, .cb-word:focus-visible { background:var(--accent-blue-light,#eaf1f8); border-color:var(--accent-blue,#2d6ca8); outline:none; }
+  .cb-word.picked { background:var(--accent-blue,#2d6ca8); border-color:var(--accent-blue,#2d6ca8); color:#fff; }
+  .cb-word.used { opacity:0.42; text-decoration:line-through; cursor:pointer; background:transparent; border-color:transparent; }
+  .cb-word.static { cursor:default; }
+  .cb-word.static:hover { background:transparent; border-color:transparent; }
+
+  /* The passage. The extra line-height is what leaves room for the numbers. */
+  .cb-passage { font-size:0.96rem; line-height:3.1; text-align:justify; }
+  .cb-slot { position:relative; display:inline-block; min-width:130px; margin:0 3px; padding:0 6px; text-align:center; vertical-align:baseline; border-bottom:1.5px solid var(--text); cursor:pointer; transition:background .12s ease, border-color .12s ease; }
+  .cb-slot-fill { display:inline-block; min-height:1.2em; font-size:0.92rem; line-height:1.4; }
+  .cb-slot-num { position:absolute; left:0; right:0; top:100%; font-size:0.76rem; font-weight:700; line-height:1.5; color:var(--text-muted); pointer-events:none; }
+  .cb-slot.over { background:var(--accent-blue-light,#eaf1f8); border-bottom-color:var(--accent-blue,#2d6ca8); }
+  .cb-slot.filled { border-bottom-color:var(--accent-blue,#2d6ca8); }
+  .cb-slot.right { background:#dcfce7; border-bottom-color:#16a34a; }
+  .cb-slot.wrong { background:#fee2e2; border-bottom-color:#dc2626; }
+  .cb-slot.static { cursor:default; }
+  .cb-slot:focus-visible { outline:2px solid var(--accent-blue,#2d6ca8); outline-offset:2px; }
+
+  .cb-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:26px 0 4px; }
+  .cb-hint { font-size:0.8rem; color:var(--text-muted); line-height:1.6; }
+  .cb-feedback { margin:6px 0 4px; }
+  .cb-fb-list { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:8px; font-size:0.85rem; color:var(--text-muted); }
+
+  /* The block editor's live preview and its controls. */
+  .cb-ed-row { display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin:16px 0 4px; }
+  .cb-ed-field { font-size:0.85rem; font-weight:600; display:flex; align-items:center; gap:9px; }
+  .cb-ed-check { font-size:0.85rem; display:flex; align-items:center; gap:9px; line-height:1.5; cursor:pointer; }
+  .cb-ed-check input { appearance:auto; -webkit-appearance:auto; width:15px; height:15px; flex:0 0 auto; cursor:pointer; }
+  .cb-ed-warn { font-size:0.8rem; color:#7a5410; background:#fdf4e3; border:1px solid #e0b768; border-radius:8px; padding:8px 12px; margin-bottom:10px; line-height:1.6; }
+  .cb-ed-prev { border:1px solid var(--border); border-radius:12px; padding:18px 20px 26px; background:var(--surface-alt,#fafbfa); }
+  .cb-ed-prev .cb-passage { line-height:2.8; }
+/* ---- 📑 The passage + sub-questions dialog --------------------------------
+   `.confirm-dialog` is declared LATE and sets max-width:400px, padding and
+   text-align:center — so this uses BOTH classes to override all three. */
+  .confirm-dialog.pb-dialog { max-width:820px; text-align:left; max-height:90vh; overflow-y:auto; }
+  .pb-label { display:block; font-size:0.85rem; font-weight:600; margin-bottom:7px; }
+  .pb-label span { font-weight:400; color:var(--text-muted); }
+  .pb-input { width:100%; box-sizing:border-box; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:0.86rem; line-height:1.65; resize:vertical; }
+  .pb-key-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .pb-key-row input { flex:1; min-width:200px; }
+  .pb-preview { margin-top:22px; border:1px solid var(--border); border-radius:12px; padding:18px 20px; background:var(--surface-alt,#fafbfa); max-height:44vh; overflow-y:auto; }
+  .pb-empty { font-size:0.85rem; color:var(--text-muted); line-height:1.7; }
+  .pb-sec-label { font-size:0.68rem; font-weight:800; letter-spacing:0.07em; text-transform:uppercase; color:var(--text-muted); margin:4px 0 8px; }
+  .pb-sec-label + .pb-row, .pb-passage + .pb-sec-label { margin-top:18px; }
+  .pb-passage { font-size:0.88rem; line-height:1.9; text-align:justify; margin-bottom:6px; }
+  .pb-row { display:flex; gap:14px; align-items:flex-start; padding:12px 0; border-top:1px solid var(--border); }
+  .pb-row-n { flex:0 0 auto; width:34px; font-weight:800; font-size:0.9rem; padding-top:5px; }
+  .pb-row-opts { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .pb-opt { display:flex; gap:9px; align-items:flex-start; padding:5px 9px; border:1px solid transparent; border-radius:8px; font-size:0.87rem; line-height:1.5; cursor:pointer; }
+  .pb-opt:hover { background:var(--surface,#fff); }
+  .pb-opt.on { background:#dcfce7; border-color:#16a34a; }
+  .pb-opt input { appearance:auto; -webkit-appearance:auto; width:15px; height:15px; flex:0 0 auto; margin-top:2px; cursor:pointer; }
+  .qpart-bar-num { display:inline-flex; align-items:center; gap:8px; font-size:0.82rem; color:var(--text-muted); }
+  .qpart-bar-num input { width:74px; padding:5px 8px; font-size:0.82rem; border:1px solid var(--border); border-radius:7px; background:var(--surface,#fff); color:var(--text); }
 /* ---- 🎯 The learning-objective chips on a question, and their picker ----
    These live on the CREATE page, not inside the Learning Objectives page's
    injected loStyles(), so they belong here, once, globally. The names are
@@ -2981,6 +3049,69 @@ option {
     color: #666;
     margin-top: 2pt;
     line-height: 1.2;
+  }
+
+  /* 🔤 Comprehension cloze, set as the paper sets it: the instruction, a boxed
+     word bank read DOWN the columns, then the passage with a rule per blank and
+     its number tucked underneath. The number is positioned rather than flowed —
+     on its own line it would open a gap through every sentence with a blank.
+     The line-height is what reserves the room for it, and the print planner
+     measures the real thing, so nothing here may depend on a screen font. */
+  .print-cb-intro {
+    font-size: 10.5pt;
+    line-height: 1.55;
+    margin-bottom: 8pt;
+  }
+  .print-cb-bank {
+    border-top: 1.8pt solid #000;
+    border-bottom: 1.8pt solid #000;
+    padding: 7pt 4pt 8pt;
+    margin: 0 0 12pt;
+  }
+  .print-cb-rule-note {
+    font-weight: 700;
+    font-size: 10.5pt;
+    margin-bottom: 7pt;
+  }
+  .print-cb-grid {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .print-cb-grid td {
+    padding: 2.5pt 8pt 2.5pt 0;
+    vertical-align: top;
+    width: 20%;
+    font-size: 10.5pt;
+    line-height: 1.4;
+  }
+  /* Its own line-height, so the numbers below each rule have somewhere to sit
+     without touching the line under them. */
+  .print-cb-passage {
+    line-height: 2.9;
+    text-align: justify;
+  }
+  .print-cb-slot {
+    position: relative;
+    display: inline-block;
+    min-width: 90pt;
+    margin: 0 3pt;
+    text-align: center;
+    vertical-align: baseline;
+    border-bottom: 1.5pt solid #000;
+  }
+  .print-cb-rule {
+    display: inline-block;
+    min-height: 12pt;
+  }
+  .print-cb-num {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    font-size: 8pt;
+    font-weight: 700;
+    line-height: 1.3;
+    color: #000;
   }
 
   
@@ -6414,6 +6545,14 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
             <span class="qpart-bar-label">🔡 Parts</span>
             <button class="btn btn-outline" type="button" onclick="autoNumberParts()"
               title="Relabel every part (a), (b), (c)… in order, top to bottom. A part is a piece of question text that has its own answer box below it. Any part labels already set are replaced, so the sequence never ends up with two (b)s.">Number parts (a) (b) (c)</button>
+            <!-- A comprehension passage numbers its sub-questions the way the
+                 paper does, and the number is printed inside the passage against
+                 the word it asks about — so the part has to wear the same one. -->
+            <label class="qpart-bar-num" title="Number the parts the way the paper does — 16, 17, 18… — instead of (a) (b) (c). Leave it blank for letters.">Number from
+              <input type="number" id="qpartStartNum" min="1" max="999" placeholder="16" inputmode="numeric">
+            </label>
+            <button class="btn btn-outline" type="button" onclick="autoNumberPartsFromInput()"
+              title="Relabel every part using the number in the box — (16) (17) (18)… — or the letters if it is empty.">Number from…</button>
             <button class="btn btn-ghost" type="button" onclick="clearAllParts()" title="Remove every part label from this question.">Clear</button>
             <span class="qpart-bar-hint">…or set a part on any block from its header.</span>
           </div>
@@ -6442,6 +6581,14 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
             <button class="add-block-btn plainanswer-add" onclick="addBlock('fillblank')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
               &#x1F532; Add Fill-in-the-Blanks
+            </button>
+            <button class="add-block-btn plainanswer-add" onclick="addBlock('clozebank')" title="One passage with numbered blanks and a lettered word bank above it. Students drag a word into each blank and it is struck off the list.">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              &#x1F524; Add Comprehension Cloze
+            </button>
+            <button class="add-block-btn text-add" onclick="pbOpen()" title="Paste a whole passage and the numbered option lists under it. They are added as ONE question, with each sub-question carrying the paper's own number as its part.">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              &#x1F4C4; Add Passage + Sub-questions
             </button>
             <button class="add-block-btn explanation-add" onclick="addBlock('explanation')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
@@ -8003,6 +8150,49 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
      somebody's work, and the Check Questions queue is exactly where a tired
      person taps quickly. Anything here can be put back in one tap until its
      seventh day, after which the next sign-in sweeps it for good. -->
+<!-- ==================== 📑 PASSAGE + SUB-QUESTIONS ====================
+     The comprehension format the block editor could not express as ONE
+     question: a passage with (16) (17) (18) printed against underlined words,
+     and the option lists that answer them below it. Added one MCQ at a time it
+     becomes five separate bank questions with the passage repeated or lost.
+     The parse is deterministic — see _pbParse. -->
+<div class="confirm-overlay" id="pbOverlay">
+  <div class="confirm-dialog pb-dialog">
+    <h3 style="margin-bottom:6px;">📑 Passage + sub-questions</h3>
+    <p style="color:var(--text-muted);font-size:0.85rem;line-height:1.7;margin-bottom:22px;">
+      Paste the passage and the option lists exactly as they are on the paper. Everything before the
+      first question number is the passage; each numbered list below it becomes a <b>part</b> carrying
+      that same number, so <b>(16)</b> in the passage and question <b>16</b> stay tied together.
+      Wrap a word in <code>__double underscores__</code> to underline it.
+    </p>
+
+    <label class="pb-label" for="pbIntro">Instruction line <span>— optional, printed above the passage</span></label>
+    <input class="form-input" id="pbIntro" type="text" placeholder="For each question from 16 to 20, choose the word closest in meaning to the underlined word(s).">
+
+    <label class="pb-label" for="pbInput" style="margin-top:16px;">Passage, then the option lists</label>
+    <textarea class="form-input pb-input" id="pbInput" rows="12" oninput="pbSync()" placeholder="As a student, I find the POSB Smart Buddy programme helpful. __Rolled out__ (16) in 2017, it is now expanding to all schools in Singapore.
+
+16   (1) Originated
+     (2) Embarked
+     (3) Launched
+     (4) Founded
+
+17   (1) advanced
+     (2) creative
+     (3) efficient
+     (4) flexible"></textarea>
+
+    <label class="pb-label" for="pbKey" style="margin-top:16px;">Answer key <span>— optional. “3 3 2 2 4”, or “16-3 17-3 18-2”.</span></label>
+    <div class="pb-key-row">
+      <input class="form-input" id="pbKey" type="text" placeholder="3 3 2 2 4">
+      <button class="btn btn-outline" type="button" onclick="pbApplyKey()">🔑 Fill answers</button>
+    </div>
+
+    <div id="pbPreview" class="pb-preview"></div>
+    <div class="btn-group" id="pbFoot" style="justify-content:flex-end;align-items:center;gap:12px;margin-top:22px;"></div>
+  </div>
+</div>
+
 <div class="confirm-overlay" id="binOverlay">
   <div class="confirm-dialog" style="max-width:700px;text-align:left;max-height:90vh;overflow-y:auto;">
     <h3 style="margin-bottom:6px;">🗑 Bin</h3>
