@@ -31,6 +31,36 @@ is built from those constants (`QUESTIONS_COL`, `SETTINGS_COL`, `PROFILES_COL`,
 `PROGRESS_COL`, …). Nothing else in the file spells a collection name out — keep
 it that way.
 
+**That rule is not style, and v1.3.0 is what it costs to break it.** Four
+functions are the only door to the bank — `_qRef` / `_vRef` / `_qCol` / `_vCol`
+— and they spelled `'questions'` and `'vetting'` inline: the Science app's own
+names, under the same `users/{uid}` tree, in the same project. So for three
+versions the two apps were *one bank wearing two front ends*. Every English
+question this app saved landed in the Science bank and every Science question
+came back out of it. Nothing threw. Nothing looked broken. The only symptom was
+Science questions listed on the English bank page, which reads as a filter bug.
+Three things follow:
+
+- **A shared-name path fails LOUDLY nowhere and quietly everywhere.** The
+  fail-closed warning below is about names the rules *don't* know; this is the
+  opposite and worse — a name the rules know for the *other app*, which works
+  perfectly and silently merges two data sets.
+- **`mistakes`, `flashcards` and `scheduledQuestions` had the same bug** and
+  are now `mistakesEn` / `flashcardsEn` / `scheduledQuestionsEn`. The comment
+  above them used to say they were "shared with no one"; they were shared with
+  the Science app, which writes exactly those three names under the same user.
+  `scheduledQuestions` was the dangerous one: a question the SCIENCE app had
+  queued would have been released into the ENGLISH bank on its release date,
+  re-linking the two a day after they were separated.
+- **The one-time rescue is `_lb*`** (📦 From Science bank, on the Question Bank
+  page, admin only). It moves what was written to the wrong collection back
+  across, deciding subject by TOPIC — the two topic lists share no entry and a
+  topic comes off a `<select>`, so it is a strong signal, and anything neither
+  list knows is listed UNTICKED for the admin to decide rather than guessed at.
+  It copies, **reads the copy back**, and only then deletes the original; a copy
+  that cannot be verified leaves the original where it is. Delete the tool once
+  the banks have been apart long enough that nobody is upgrading across it.
+
 **A name the Firestore rules do not know about fails closed**: reads come back
 empty, writes are denied, and nothing on screen explains why. So a new
 collection means a matching block in `firestore.rules`, deployed alongside the
@@ -306,6 +336,44 @@ after it INHERITS until the next opener. Read it with `qPartMap(blocks)` /
     deliberately absent from `EDITOR_OWNED_QUESTION_FIELDS`.
   - Run **`node tools/check-questions-tests.mjs`** after touching any of it.
 
+## 🗑 The bin — deleting a question is a move, not a delete
+
+A question is somebody's work: a screenshot cropped, an answer written, a
+diagram touched up. So every real deletion in the app is a **move**
+(`questionsEn` → `binEn`, `binQuestion`), restorable in one tap for `BIN_DAYS`
+(7), after which the next sign-in sweeps it for good.
+
+- **`binQuestion(id)` is the ONE deletion path** — the bank card's 🗑, the
+  Question Doctor's, and ✅ Check Questions' all go through it. `deleteQuestionDoc`
+  is the raw hard-delete and stays that way, because two of its three call sites
+  are **moves to vetting**, not deletions; binning there would leave a copy in
+  the bin of a question that is still very much alive.
+- **Copy → read the copy back → delete the original**, the same order as the
+  legacy bank rescue. If the copy cannot be verified the question stays in the
+  bank; if the *original* cannot be deleted the bin copy is rolled back, because
+  a question in both places is worse than a question that refused to delete.
+- **A binned question is OUT of `questionsEn`.** It is not a flag on a live
+  question — no practice mode, worksheet, search or student can reach it. A
+  saved worksheet that referenced it draws its "no longer in the bank" row, and
+  restoring puts it back.
+- **`binExpired` KEEPS a record whose date it cannot read**, and that asymmetry
+  is deliberate: keeping one too long leaves a row in a dialog with a *Delete
+  forever* button beside it, while sweeping one too early destroys work in a
+  background job with nothing on screen to show it happened. `_binExpiryMs`
+  accepts **only an ISO string** for the same reason — `Date.parse` coerces, and
+  `Date.parse(12345)` is the *year 12345*, so a numeric timestamp would read as
+  perfectly healthy and sit in the bin for ten millennia.
+- **The purge is client-side** — there is no server — so it runs when an author
+  next opens the app, not on the stroke of the seventh day. `binDaysLeft` is
+  therefore what the bin PROMISES (never *less* than 7 days), not a countdown.
+- **The confirm dialog is on the bank and the Doctor, and deliberately NOT in
+  Check Questions.** That queue is worked at speed with one big button and an
+  ↩ Undo in view at all times; a dense list of small 🗑 icons is a different
+  risk. `cqUndo` covers the deletion *and* the last ✓, newest first.
+- `_firestoreSafeQuestion` is shared with `saveQuestion` — Firestore rejects
+  nested arrays, so a table question written to the bin without it fails to save
+  at all. Run **`node tools/bin-tests.mjs`** after touching any of it.
+
 ## Image touch-up & the transform session
 
 - **Touch up & label** (`_annotXform*`) is ONE session shared by Resize (F),
@@ -471,12 +539,22 @@ reported in chat, to know whether the deploy actually went through.
   named constant used at every call site rather than a string typed out in three
   places, and swapping the model means checking its scale first. The Science app
   (`polymathlc/cer`) carries the same pair — keep the two in step.
-- Run the four harnesses after touching what they cover — every failure they
+- Run the six harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
   - `node tools/objective-tag-tests.mjs`
   - `node tools/learning-gap-tests.mjs`
+  - `node tools/bin-tests.mjs` — the bin's calendar and stored record, plus the
+    `_firestoreSafeQuestion` helper every save shares. A day counted wrong
+    purges somebody's question early, in a background sweep, with nothing on
+    screen; a field lost on the way in is a question that comes back broken a
+    week later with nothing left to compare it against.
+  - `node tools/bank-rescue-tests.mjs` — the one-time rescue's topic verdicts.
+    Wrong in one direction it leaves an author's questions in the other app and
+    reports nothing to move; wrong in the other it offers a one-click **delete
+    from the Science bank**. It also pins the premise the whole heuristic rests
+    on: that the two subjects' topic lists share no entry.
 
 ### Two CSS traps in `index.html`
 

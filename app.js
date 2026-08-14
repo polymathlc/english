@@ -85,19 +85,21 @@ const googleProvider = new GoogleAuthProvider();
 // =====================================================================
 const QUESTIONS_COL = 'questionsEn';        // users/{uid}/questionsEn
 const VETTING_COL   = 'vettingEn';          // users/{uid}/vettingEn
+const BIN_COL       = 'binEn';              // users/{uid}/binEn — deleted, restorable for BIN_DAYS
 const SETTINGS_COL  = 'settingsEn';         // users/{uid}/settingsEn
 const NOTES_COL     = 'teachingNotesEn';    // users/{uid}/teachingNotesEn
 const STATS_COL     = 'statsEn';            // users/{uid}/statsEn
 const WORKSHEETS_COL     = 'worksheetsEn';  // users/{uid}/worksheetsEn
 const USER_WORKSESSION_COL = 'workSessionsEn';
-// These three predate the naming convention and are shared with no one, so they
-// keep their plain names. They are here — rather than spelled inline where they
-// are used — because a collection the rules do not name FAILS CLOSED, and the
-// only way to keep firestore.rules honest is to be able to read the whole list
-// of collections in one place.
-const MISTAKES_COL   = 'mistakes';            // users/{uid}/mistakes
-const FLASHCARDS_COL = 'flashcards';          // users/{uid}/flashcards
-const SCHEDULED_COL  = 'scheduledQuestions';  // users/{uid}/scheduledQuestions
+// These three kept their plain names until v1.3.0, on the belief that they were
+// shared with no one. They were not: the Science app writes exactly these three
+// names under the same users/{uid} tree, so one student's mistake log and
+// revision deck held both subjects at once — and a question the SCIENCE app had
+// queued for release landed in the ENGLISH bank on its release date, which would
+// have re-linked the two banks a day after they were separated.
+const MISTAKES_COL   = 'mistakesEn';            // users/{uid}/mistakesEn
+const FLASHCARDS_COL = 'flashcardsEn';          // users/{uid}/flashcardsEn
+const SCHEDULED_COL  = 'scheduledQuestionsEn';  // users/{uid}/scheduledQuestionsEn
 // Top-level (shared across accounts, so the teacher can read the class).
 const PROFILES_COL  = 'enUserProfiles';
 const CONFIG_COL    = 'enConfig';
@@ -1630,6 +1632,7 @@ async function enterApp(user) {
     // in the background (ten workers, metadata fallback — see autoTagAllQuestions).
     autoTagWholeBankInBackground();
     qPartAutoConvertLater();   // typed "a)" markers -> official parts, once per load
+    binInit();                 // sweep anything deleted more than BIN_DAYS ago
     // Warm the image cache in the background so bank / Doctor / Past Papers
     // images show instantly (non-blocking, idle-scheduled).
     warmImageCacheInBackground(questionBank);
@@ -1661,6 +1664,7 @@ async function enterApp(user) {
     renderWsQuestions();
     warmImageCacheInBackground(questionBank);
     qPartAutoConvertLater();
+    binInit();
   } else {
     // Student: load admin's question bank
     configureSidebarForRole('student');
@@ -1736,7 +1740,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.4.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -11195,6 +11199,15 @@ function renderQuestionBank() {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
         <h3>No questions yet</h3>
         <p>Create your first question to get started</p>
+        ${_isAdmin() && questionBank.length === 0 ? `
+        <!-- The bank being empty is exactly what an admin sees the first time
+             they open it after v1.3.0 separated the two apps: the questions are
+             not lost, they are in the Science bank this app used to write to. -->
+        <p style="margin-top:18px;line-height:1.75;">
+          Authored questions here before and expected to see them?<br>
+          Until v1.3.0 they were saved into the Science portal's bank.
+        </p>
+        <button class="btn btn-outline" style="margin-top:10px;" onclick="lbOpen()">📦 Move them across</button>` : ''}
       </div>`;
     return;
   }
@@ -11663,14 +11676,19 @@ async function confirmRegenerate() {
   }
 }
 
+// Every real deletion in the app goes to the BIN, never straight out. The
+// confirm stays here because the bank is a dense list of small 🗑 icons with no
+// undo in view; the ✅ Check Questions queue drops it, because there it is one
+// big button with an ↩ Undo sitting beside it.
 function deleteQuestion(id) {
-  showConfirm('Delete Question', 'Are you sure you want to permanently delete this question?', () => {
-    questionBank = questionBank.filter(q => q.id !== id);
-    renderQuestionBank();
-    updateCounts();
-    showToast('Question deleted', 'info');
-    deleteQuestionDoc(id);
-  });
+  const q = _docQById(id);
+  showConfirm('Delete question',
+    `“${(q && q.title) || 'Untitled question'}” goes to the bin. You can restore it there for ${BIN_DAYS} days.`,
+    async () => {
+      if (!await binQuestion(id)) return;
+      renderQuestionBank();
+      showToast(`Moved to the bin — restorable for ${BIN_DAYS} days`, 'info');
+    });
 }
 
 // =====================================================================
@@ -17064,12 +17082,21 @@ function wkExportCsv() {
 // =====================================================================
 // STORAGE — subcollection-per-question architecture
 //
-//   users/{uid}/questions/{questionId}   ← question bank
-//   users/{uid}/vetting/{questionId}     ← vetting list
+//   users/{uid}/questionsEn/{questionId}   ← question bank
+//   users/{uid}/vettingEn/{questionId}     ← vetting list
 //
 // Each question is its own document: no transactions, no size limits,
 // no merging complexity.  A single setDoc/deleteDoc call never fails
 // due to contention or document growth.
+//
+// THE COLLECTION NAME COMES FROM THE CONSTANT, NEVER FROM A LITERAL HERE.
+// These four functions are the only door to the bank, and until v1.3.0 they
+// spelled 'questions' / 'vetting' inline — the Science app's own names, under
+// the same users/{uid} tree, in the same Firebase project. So every English
+// question this app saved went into the SCIENCE bank and every Science question
+// came back out of it: one bank wearing two apps. Nothing threw, nothing looked
+// broken, and the only symptom was Science questions listed on the English
+// bank page. `_lb*` below moves the English ones back out.
 // =====================================================================
 
 // _bankOwnerUid, not currentUser.uid: an employee authors into the teacher's
@@ -17077,10 +17104,327 @@ function wkExportCsv() {
 // students are served from.
 function _qOwner(id) { return _ownerUidByQuestionId[id] || _bankOwnerUid(); }
 function _vOwner(id) { return _ownerUidByVettingId[id]  || _bankOwnerUid(); }
-function _qRef(id) { return doc(db, 'users', _qOwner(id), 'questions', id); }
-function _vRef(id) { return doc(db, 'users', _vOwner(id), 'vetting',   id); }
-function _qCol()   { return collection(db, 'users', _bankOwnerUid(), 'questions'); }
-function _vCol()   { return collection(db, 'users', _bankOwnerUid(), 'vetting');   }
+function _qRef(id) { return doc(db, 'users', _qOwner(id), QUESTIONS_COL, id); }
+function _vRef(id) { return doc(db, 'users', _vOwner(id), VETTING_COL,   id); }
+function _qCol()   { return collection(db, 'users', _bankOwnerUid(), QUESTIONS_COL); }
+function _vCol()   { return collection(db, 'users', _bankOwnerUid(), VETTING_COL);   }
+
+// =====================================================================
+// LEGACY BANK RESCUE — one-time, admin only  (v1.3.0)
+//
+// Everything this app saved before the four helpers above were fixed is
+// sitting in the SCIENCE app's collections: users/{uid}/questions,
+// users/{uid}/vetting, and users/{uid}/scheduledQuestions for anything queued
+// for release. Separating the two banks therefore reads as "all my questions
+// have gone", and leaves the Science bank holding a pile of English ones — so
+// this moves them back across.
+//
+// Which subject a question belongs to is decided by its TOPIC, and that is a
+// strong signal: the two topic lists do not share a single entry, and the topic
+// comes off a <select> rather than being typed. Anything neither list knows is
+// listed as UNKNOWN and left UNTICKED — moving a question here removes it from
+// the other app, so a guess is not the tool's to make.
+//
+// A question is never deleted on the strength of a write having been issued:
+// the copy is read back first, and one that cannot be verified leaves the
+// original exactly where it is. Running it twice is harmless.
+// =====================================================================
+const LEGACY_COLS = {
+  questions: { from: 'questions',          to: QUESTIONS_COL, label: '📚 Question bank' },
+  vetting:   { from: 'vetting',            to: VETTING_COL,   label: '🔍 Vetting list' },
+  scheduled: { from: 'scheduledQuestions', to: SCHEDULED_COL, label: '📅 Scheduled for release' },
+};
+const LEGACY_KINDS = Object.keys(LEGACY_COLS);
+const LB_CHUNK = 6;             // moves in flight at once
+let _lbScan = null;             // { questions:[], vetting:[], scheduled:[], science, unknown, english }
+let _lbPick = new Set();        // 'kind:docId'
+let _lbBusy = false;
+
+// A scheduled release wraps the whole question in `questionData`; the bank and
+// the vetting list hold it plainly. One accessor, so the three read alike.
+function _lbInner(data) { return (data && data.questionData) ? data.questionData : data; }
+function _lbTitle(data) {
+  const q = _lbInner(data) || {};
+  return String(q.title || (data && data.questionTitle) || '').trim() || 'Untitled question';
+}
+function _lbTopic(data) {
+  const q = _lbInner(data) || {};
+  return String(q.topic || (data && data.topic) || '').trim();
+}
+
+// Every topic this app has ever offered: the live list, plus the raw defaults
+// (so a topic the admin has since hidden still reads as English) plus their own
+// custom ones. Lower-cased, because a topic is matched by exact string.
+function _lbEnglishTopics() {
+  const s = new Set();
+  const add = t => { const k = String(t == null ? '' : t).trim().toLowerCase(); if (k) s.add(k); };
+  try { currentTopics().forEach(add); } catch (_) {}
+  try { Object.keys(topicLevelMap).forEach(add); } catch (_) {}
+  try { Object.keys(customTopics).forEach(add); } catch (_) {}
+  return s;
+}
+
+// The Science portal's topic list (polymathlc/cer, `topicLevelMap`), so a
+// question can be positively identified as the OTHER app's rather than merely
+// failing to look like this one's. Without it, an English question filed under
+// a topic this browser does not know — custom topics live in localStorage, so
+// another machine has none of them — would be quietly written off as Science
+// and left behind, with the tool reporting nothing to move.
+const LEGACY_SCIENCE_TOPICS = [
+  'Living and non-living things', 'Materials', 'Life Cycles', 'Magnets',
+  'Plant Systems', 'Human Body Systems', 'Matter and its 3 States', 'Light', 'Heat',
+  'Water and its 3 States', 'Plant Reproduction', 'Human Reproduction',
+  'Human and Plant Respiration', 'Human and Plant Transport', 'Electrical Systems',
+  'Forces', 'Energy in Food', 'Energy Conversion',
+  'Living Together', 'Food Chains and Webs', 'Humans and the Environment',
+  'Cell Systems',   // retired over there, still on its older questions
+].map(t => t.toLowerCase());
+
+// english → move it back. science → leave it alone, and don't even list it.
+// Anything else → UNKNOWN: listed, unticked, and the admin decides. A verdict
+// this tool is not sure of is never spent on the student's behalf.
+function _lbVerdict(data, english) {
+  const q = _lbInner(data) || {};
+  const topics = [q.topic, q.topic2, data && data.topic]
+    .map(t => String(t == null ? '' : t).trim().toLowerCase()).filter(Boolean);
+  if (!topics.length) return 'unknown';
+  if (topics.some(t => english.has(t))) return 'english';
+  if (topics.some(t => LEGACY_SCIENCE_TOPICS.includes(t))) return 'science';
+  return 'unknown';
+}
+
+// Read the three legacy collections. Science questions are COUNTED and not
+// listed: a bank of two thousand of them is not something to scroll past to
+// reach the eighteen that need moving.
+async function _lbRunScan() {
+  const owner = _bankOwnerUid();
+  if (!owner) throw new Error('not signed in');
+  const english = _lbEnglishTopics();
+  const out = { questions: [], vetting: [], scheduled: [], science: 0, unknown: 0, english: 0 };
+  for (const kind of LEGACY_KINDS) {
+    const snap = await getDocs(collection(db, 'users', owner, LEGACY_COLS[kind].from));
+    snap.forEach(d => {
+      const data = d.data();
+      if (!data) return;
+      const verdict = _lbVerdict(data, english);
+      if (verdict === 'science') { out.science++; return; }
+      out[verdict]++;
+      out[kind].push({ kind, docId: d.id, data, verdict, title: _lbTitle(data), topic: _lbTopic(data) });
+    });
+  }
+  return out;
+}
+
+// Copy → read back → delete. The read-back is what makes the delete safe: a
+// write that resolved is not the same as a document that is there.
+async function _lbMoveOne(rec) {
+  const owner = _bankOwnerUid();
+  const spec = LEGACY_COLS[rec.kind];
+  const to = doc(db, 'users', owner, spec.to, rec.docId);
+  await setDoc(to, rec.data);
+  const back = await getDoc(to);
+  if (!back.exists()) throw new Error('the copy could not be read back');
+  await deleteDoc(doc(db, 'users', owner, spec.from, rec.docId));
+}
+
+function lbOpen() {
+  if (!_isAdmin()) return;
+  const ov = document.getElementById('legacyBankOverlay');
+  if (!ov) return;
+  ov.classList.add('active');
+  if (_lbScan) lbRender(); else lbRescan();
+}
+
+function lbClose() {
+  if (_lbBusy) return;   // a half-finished move must not be walked away from
+  const ov = document.getElementById('legacyBankOverlay');
+  if (ov) ov.classList.remove('active');
+}
+
+async function lbRescan() {
+  if (_lbBusy) return;
+  _lbBusy = true;
+  _lbScan = null;
+  _lbPick = new Set();
+  lbRender('Reading the Science app’s bank…');
+  try {
+    _lbScan = await _lbRunScan();
+    // Pre-tick what the topic lists recognise as English; the unknowns stay
+    // unticked, because moving one takes it out of the other app.
+    LEGACY_KINDS.forEach(kind => {
+      _lbScan[kind].forEach(r => { if (r.verdict === 'english') _lbPick.add(kind + ':' + r.docId); });
+    });
+  } catch (err) {
+    console.warn('legacy bank scan', err);
+    _lbScan = { error: (err && err.message) || 'could not read the old bank' };
+  }
+  _lbBusy = false;
+  lbRender();
+}
+
+// By INDEX, not by document id: these ids come out of another app's collection,
+// and escapeHtml leaves a quote alone — one in an id would break out of the
+// onchange attribute it was being interpolated into.
+function lbToggle(kind, idx) {
+  const rec = _lbScan && _lbScan[kind] && _lbScan[kind][idx];
+  if (!rec) return;
+  const key = kind + ':' + rec.docId;
+  if (_lbPick.has(key)) _lbPick.delete(key); else _lbPick.add(key);
+  lbRender();
+}
+
+function lbToggleAll(kind, on) {
+  if (!_lbScan || !_lbScan[kind]) return;
+  _lbScan[kind].forEach(r => {
+    const key = kind + ':' + r.docId;
+    if (on) _lbPick.add(key); else _lbPick.delete(key);
+  });
+  lbRender();
+}
+
+function _lbBadge(verdict) {
+  return verdict === 'english'
+    ? '<span style="background:rgba(16,124,73,0.12);color:#0d6b41;border-radius:999px;padding:2px 9px;font-size:0.72rem;font-weight:600;white-space:nowrap;">English topic</span>'
+    : '<span style="background:rgba(180,120,10,0.14);color:#8a5a06;border-radius:999px;padding:2px 9px;font-size:0.72rem;font-weight:600;white-space:nowrap;">Topic not recognised</span>';
+}
+
+function lbRender(status) {
+  const body = document.getElementById('lbBody');
+  const foot = document.getElementById('lbFoot');
+  if (!body || !foot) return;
+
+  if (_lbBusy || !_lbScan) {
+    body.innerHTML = `<div style="padding:34px 8px;text-align:center;color:var(--text-muted);line-height:1.7;">
+        <div style="font-size:1.6rem;margin-bottom:10px;">⏳</div>
+        ${escapeHtml(status || 'Working…')}
+      </div>`;
+    foot.innerHTML = '';
+    return;
+  }
+
+  if (_lbScan.error) {
+    body.innerHTML = `<div style="padding:22px;background:rgba(220,60,60,0.06);border:1px solid rgba(220,60,60,0.25);border-radius:12px;line-height:1.7;">
+        <b>Could not read the old bank.</b><br>
+        <span style="color:var(--text-muted);font-size:0.88rem;">${escapeHtml(_lbScan.error)}</span>
+      </div>`;
+    foot.innerHTML = `<button class="btn btn-outline" onclick="lbClose()">Close</button>
+      <button class="btn btn-primary" onclick="lbRescan()">Try again</button>`;
+    return;
+  }
+
+  const total = LEGACY_KINDS.reduce((n, k) => n + _lbScan[k].length, 0);
+  if (!total) {
+    body.innerHTML = `<div style="padding:30px 8px;text-align:center;line-height:1.8;">
+        <div style="font-size:1.8rem;margin-bottom:8px;">✓</div>
+        <b>Nothing left to move.</b><br>
+        <span style="color:var(--text-muted);font-size:0.9rem;">
+          The Science app's bank holds ${_lbScan.science} question${_lbScan.science === 1 ? '' : 's'},
+          and every one of them is filed under a Science topic.
+        </span>
+      </div>`;
+    foot.innerHTML = `<button class="btn btn-primary" onclick="lbClose()">Done</button>`;
+    return;
+  }
+
+  const groups = LEGACY_KINDS.filter(k => _lbScan[k].length).map(kind => {
+    const rows = _lbScan[kind].map((r, i) => {
+      const on = _lbPick.has(kind + ':' + r.docId);
+      return `<label style="display:flex;gap:12px;align-items:flex-start;padding:11px 13px;border-bottom:1px solid var(--border);cursor:pointer;">
+          <input type="checkbox" ${on ? 'checked' : ''} onchange="lbToggle('${kind}',${i})"
+                 style="appearance:auto;-webkit-appearance:auto;margin-top:3px;flex:0 0 auto;">
+          <span style="flex:1;min-width:0;line-height:1.6;">
+            <span style="display:block;font-weight:600;">${escapeHtml(r.title)}</span>
+            <span style="display:block;color:var(--text-muted);font-size:0.82rem;">
+              ${r.topic ? escapeHtml(r.topic) : '<em>no topic</em>'}
+            </span>
+          </span>
+          ${_lbBadge(r.verdict)}
+        </label>`;
+    }).join('');
+    return `<div style="margin-bottom:22px;border:1px solid var(--border);border-radius:12px;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface-2,rgba(0,0,0,0.03));border-bottom:1px solid var(--border);">
+          <b style="flex:1;">${LEGACY_COLS[kind].label}</b>
+          <span style="color:var(--text-muted);font-size:0.82rem;">${_lbScan[kind].length} found</span>
+          <button class="btn btn-outline" style="padding:3px 10px;font-size:0.78rem;" onclick="lbToggleAll('${kind}',true)">Tick all</button>
+          <button class="btn btn-outline" style="padding:3px 10px;font-size:0.78rem;" onclick="lbToggleAll('${kind}',false)">None</button>
+        </div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div style="padding:14px 16px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2);border-radius:12px;line-height:1.75;margin-bottom:22px;font-size:0.88rem;">
+      Ticked questions are <b>moved</b> — copied into the English bank, then removed from the
+      Science one. ${_lbScan.science} question${_lbScan.science === 1 ? '' : 's'} filed under a
+      Science topic ${_lbScan.science === 1 ? 'is' : 'are'} left alone and not listed here.
+      ${_lbScan.unknown ? `<br><b>${_lbScan.unknown}</b> could not be placed by topic and ${_lbScan.unknown === 1 ? 'is' : 'are'} left unticked — have a look before moving ${_lbScan.unknown === 1 ? 'it' : 'them'}.` : ''}
+    </div>
+    ${groups}`;
+
+  const picked = _lbPick.size;
+  foot.innerHTML = `
+    <span style="margin-right:auto;color:var(--text-muted);font-size:0.86rem;">${picked} ticked</span>
+    <button class="btn btn-outline" onclick="lbClose()">Cancel</button>
+    <button class="btn btn-primary" onclick="lbMove()" ${picked ? '' : 'disabled'}>Move ${picked} to the English bank</button>`;
+}
+
+async function lbMove() {
+  if (_lbBusy || !_lbScan || _lbScan.error) return;
+  const picks = [];
+  LEGACY_KINDS.forEach(kind => {
+    (_lbScan[kind] || []).forEach(r => { if (_lbPick.has(kind + ':' + r.docId)) picks.push(r); });
+  });
+  if (!picks.length) return;
+
+  _lbBusy = true;
+  let failed = 0, moved = 0;
+  for (let i = 0; i < picks.length; i += LB_CHUNK) {
+    const slice = picks.slice(i, i + LB_CHUNK);
+    lbRender(`Moving ${Math.min(i + slice.length, picks.length)} of ${picks.length}…`);
+    const results = await Promise.all(slice.map(r =>
+      _lbMoveOne(r).then(() => true).catch(err => { console.warn('legacy move', r.docId, err); return false; })));
+    results.forEach(ok => { if (ok) moved++; else failed++; });
+  }
+  // Still busy through the reload — the dialog must not be closable while the
+  // bank underneath it is being rebuilt.
+  lbRender('Reloading the bank…');
+  // Re-read rather than patching the arrays by hand: the bank, the vetting list
+  // and the release queue have all just changed underneath us.
+  try { await loadFromStorage(); } catch (err) { console.warn('reload after move', err); }
+  try { await loadScheduledQuestions(); } catch (_) {}
+  try { renderQuestionBank(); } catch (_) {}
+  try { renderVettingList(); } catch (_) {}
+
+  _lbBusy = false;    // lbRescan() returns early while this is set
+  await lbRescan();   // whatever failed is still there, and now says so
+  showToast(failed
+    ? `Moved ${moved} question${moved === 1 ? '' : 's'} — ${failed} could not be moved and ${failed === 1 ? 'was' : 'were'} left where ${failed === 1 ? 'it is' : 'they are'}`
+    : `Moved ${moved} question${moved === 1 ? '' : 's'} into the English bank ✓`,
+    failed ? 'error' : 'success');
+}
+
+// Firestore rejects nested arrays. A LOADED table block carries data as
+// array-of-arrays and colWidths as an array (normalizeLoadedQuestion restores
+// them for the editor), so anything writing a HELD question back out — a save,
+// the tag passes, the usage backfill, a trip to the bin — has to convert them
+// on the way, exactly as collectQuestionData does for the editor. The in-memory
+// object is left alone: it is still the one the editor and the bank are using.
+function _firestoreSafeQuestion(q) {
+  const needs = q && Array.isArray(q.blocks) && q.blocks.some(b => b && b.type === 'table' &&
+    (Array.isArray(b.data) || Array.isArray(b.colWidths)));
+  if (!needs) return q;
+  const out = JSON.parse(JSON.stringify(q));
+  out.blocks.forEach(b => {
+    if (!b || b.type !== 'table') return;
+    if (Array.isArray(b.data)) b.data = tableDataToFirestore(b.data);
+    if (Array.isArray(b.colWidths)) {
+      const cw = {};
+      b.colWidths.forEach((w, i) => { if (w !== null && w !== undefined) cw[String(i)] = w; });
+      b.colWidths = cw;
+    }
+  });
+  return out;
+}
 
 let _inflightOps = 0;
 let _saveHideTimer = null;
@@ -17126,25 +17470,7 @@ async function saveQuestion(q, opts) {
     if (_inflightOps === 0) _setSaveStatus(ok ? 'saved' : 'error');
     return ok;
   };
-  // Firestore rejects nested arrays. A LOADED table block carries data as
-  // array-of-arrays and colWidths as an array (normalizeLoadedQuestion restores
-  // them for the editor), so a save from a held object — the tag passes, the
-  // usage backfill — must convert them back on the way out, exactly as
-  // collectQuestionData does for the editor. The in-memory object stays as-is.
-  let payload = q;
-  if (q && Array.isArray(q.blocks) && q.blocks.some(b => b && b.type === 'table' &&
-      (Array.isArray(b.data) || Array.isArray(b.colWidths)))) {
-    payload = JSON.parse(JSON.stringify(q));
-    payload.blocks.forEach(b => {
-      if (!b || b.type !== 'table') return;
-      if (Array.isArray(b.data)) b.data = tableDataToFirestore(b.data);
-      if (Array.isArray(b.colWidths)) {
-        const cw = {};
-        b.colWidths.forEach((w, i) => { if (w !== null && w !== undefined) cw[String(i)] = w; });
-        b.colWidths = cw;
-      }
-    });
-  }
+  const payload = _firestoreSafeQuestion(q);
   let attempts = 0;
   while (attempts < tries) {
     try {
@@ -17222,6 +17548,307 @@ function deleteVettingDoc(id) {
   deleteDoc(_vRef(id))
     .then(() => _xtAnnounceQuestion(id, 'vetting', 'del'))
     .catch(err => console.warn('deleteVettingDoc:', err));
+}
+
+// =====================================================================
+// 🗑 THE BIN — deleting a question stopped being final  (v1.4.0)
+//
+// A question is somebody's work: a screenshot cropped, an answer written, a
+// diagram touched up, an explanation checked. Deleting one used to be a
+// `deleteDoc` behind a confirm dialog, which is the whole of it gone on a
+// mis-tap — and the ✅ Check Questions queue is exactly where a tired person
+// taps quickly. So a deletion is now a MOVE:
+//
+//     users/{uid}/questionsEn/{id}   →   users/{uid}/binEn/{id}
+//
+// and it stays there, restorable in one tap, for BIN_DAYS (7) — after which it
+// is deleted for good. Same shape as every other move in this file: copy, READ
+// THE COPY BACK, and only then delete the original. A copy that cannot be
+// verified leaves the question exactly where it was.
+//
+// Two things follow from a binned question being OUT of `questionsEn`:
+//   · no practice mode, worksheet, game or search can serve it — the bin is not
+//     a flag on a live question, it is the question being gone;
+//   · a saved worksheet that referenced it says so (the worksheet editor already
+//     draws a row for an id the bank no longer has), and restoring puts it back.
+//
+// The purge is CLIENT-SIDE — there is no server here — so it runs when an
+// author next opens the app, not on the stroke of the seventh day. binDaysLeft
+// is therefore what the bin PROMISES (never less than the real 7 days), not a
+// countdown to an exact moment.
+// =====================================================================
+const BIN_DAYS = 7;              // how long a deleted question is kept
+const BIN_PURGE_DELAY = 6000;    // after sign-in, out of the way of first paint
+let _binList = [];               // newest deletion first
+let _binLoaded = false;
+let _binBusy = false;
+
+function _binRef(id) { return doc(db, 'users', _bankOwnerUid(), BIN_COL, id); }
+function _binCol()   { return collection(db, 'users', _bankOwnerUid(), BIN_COL); }
+
+// When this record is due to go, or null if its date cannot be read.
+//
+// Only a STRING is accepted, and that is not fussiness: `Date.parse` coerces,
+// so a number like 12345 parses as the YEAR 12345 and the record would sit in
+// the bin until the year 12345. Anything that is not an ISO string is a shape
+// this app does not write, so it is treated as unknown rather than guessed at.
+function _binExpiryMs(rec) {
+  const raw = rec && rec.deletedAt;
+  if (typeof raw !== 'string' || !raw) return null;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) ? t + BIN_DAYS * 864e5 : null;
+}
+// Whole days remaining, rounded UP: a question deleted 20 minutes ago has 7
+// days left, not 6. `null` means the date cannot be read.
+function binDaysLeft(rec) {
+  const at = _binExpiryMs(rec);
+  if (at === null) return null;
+  const ms = at - Date.now();
+  return ms <= 0 ? 0 : Math.ceil(ms / 864e5);
+}
+// A record whose date cannot be read is NEVER swept. The two mistakes here are
+// not equal: keeping one too long leaves a row in a dialog with a Delete
+// forever button beside it, and sweeping one too early destroys work with
+// nothing on screen to show it happened. So when in doubt, keep it.
+function binExpired(rec) {
+  const at = _binExpiryMs(rec);
+  return at !== null && at <= Date.now();
+}
+
+function _binRecord(q, from) {
+  return {
+    id: q.id,
+    deletedAt: new Date().toISOString(),
+    deletedBy: (currentUser && currentUser.uid) || '',
+    deletedByName: (currentUser && (currentUser.name || currentUser.email)) || '',
+    from: from || 'bank',
+    // Denormalised so the bin list renders without unpacking every question,
+    // and so a row is still readable if `question` is somehow malformed.
+    title: String(q.title || '').trim() || 'Untitled question',
+    topic: String(q.topic || '').trim(),
+    question: _firestoreSafeQuestion(q),
+  };
+}
+
+async function binLoad(force) {
+  if (!currentUser || !_canAuthor()) return _binList;
+  if (_binLoaded && !force) return _binList;
+  try {
+    const snap = await getDocs(_binCol());
+    const list = [];
+    snap.forEach(d => { const r = d.data(); if (r && r.id) list.push(r); });
+    list.sort((a, b) => String(b.deletedAt || '').localeCompare(String(a.deletedAt || '')));
+    _binList = list;
+    _binLoaded = true;
+  } catch (err) {
+    console.warn('bin load', err);
+  }
+  _binUpdateCount();
+  return _binList;
+}
+
+// Move a question out of the bank and into the bin. Returns true if it landed.
+async function binQuestion(id) {
+  const q = _docQById(id);
+  if (!q || !currentUser) return false;
+  const rec = _binRecord(q, 'bank');
+  try {
+    await setDoc(_binRef(id), rec);
+    const back = await getDoc(_binRef(id));
+    if (!back.exists()) throw new Error('the copy could not be read back');
+  } catch (err) {
+    console.warn('bin write', err);
+    showToast('Could not delete that question — it is still in the bank', 'error');
+    return false;
+  }
+  // Only now is the original safe to remove. Awaited rather than going through
+  // deleteQuestionDoc, because the caller needs to know it really went.
+  try {
+    await deleteDoc(_qRef(id));
+  } catch (err) {
+    console.warn('bin delete original', err);
+    // The bin copy is harmless on its own — the question is still in the bank,
+    // which is the state the author wanted least badly of the two.
+    try { await deleteDoc(_binRef(id)); } catch (_) {}
+    showToast('Could not delete that question — it is still in the bank', 'error');
+    return false;
+  }
+  _xtAnnounceQuestion(id, 'bank', 'del');
+  questionBank = questionBank.filter(x => x.id !== id);
+  _binList.unshift(rec);
+  updateCounts();
+  _binUpdateCount();
+  return true;
+}
+
+// Put one back. The save is QUIET — restoring is not authoring, and it must not
+// land in anybody's work-session log as a question written — but the other tabs
+// are told by hand, because they do need to know the bank changed.
+async function binRestore(id) {
+  const rec = _binList.find(r => r && r.id === id);
+  if (!rec || !rec.question) return false;
+  const q = normalizeLoadedQuestion(JSON.parse(JSON.stringify(rec.question)));
+  const ok = await saveQuestion(q, { quiet: true });
+  if (!ok) { showToast('Could not restore that question — try again', 'error'); return false; }
+  _xtAnnounceQuestion(id, 'bank', 'save');
+  try { await deleteDoc(_binRef(id)); } catch (err) { console.warn('bin clear after restore', err); }
+  _binList = _binList.filter(r => r.id !== id);
+  if (!questionBank.some(x => x.id === id)) questionBank.push(q);
+  updateCounts();
+  _binUpdateCount();
+  return true;
+}
+
+async function _binForget(id) {
+  try { await deleteDoc(_binRef(id)); } catch (err) { console.warn('bin purge', err); return false; }
+  _binList = _binList.filter(r => r.id !== id);
+  _binUpdateCount();
+  return true;
+}
+
+// Everything past its seventh day, swept when an author next opens the app.
+async function binPurgeExpired() {
+  if (!currentUser || !_canAuthor()) return 0;
+  await binLoad(true);
+  const gone = _binList.filter(binExpired);
+  for (const rec of gone) await _binForget(rec.id);
+  if (gone.length) console.log(`bin: ${gone.length} question(s) past ${BIN_DAYS} days deleted for good`);
+  return gone.length;
+}
+
+function binInit() {
+  if (!_canAuthor()) return;
+  setTimeout(() => { binPurgeExpired().catch(e => console.warn('bin purge', e)); }, BIN_PURGE_DELAY);
+}
+
+// ---- the bin dialog -----------------------------------------------------
+function _binUpdateCount() {
+  const n = _binList.length;
+  document.querySelectorAll('.bin-count').forEach(el => {
+    el.textContent = n ? ` (${n})` : '';
+  });
+}
+
+async function binOpen() {
+  if (!_canAuthor()) return;
+  const ov = document.getElementById('binOverlay');
+  if (!ov) return;
+  ov.classList.add('active');
+  binRender('Reading the bin…');
+  await binLoad(true);
+  // Anything already past its seventh day is swept on the way in, so the list
+  // never offers a Restore that would be undone seconds later by the purge.
+  const gone = _binList.filter(binExpired);
+  for (const rec of gone) await _binForget(rec.id);
+  binRender();
+}
+
+function binClose() {
+  if (_binBusy) return;
+  const ov = document.getElementById('binOverlay');
+  if (ov) ov.classList.remove('active');
+}
+
+function binRender(status) {
+  const body = document.getElementById('binBody');
+  const foot = document.getElementById('binFoot');
+  if (!body || !foot) return;
+
+  if (status) {
+    body.innerHTML = `<div style="padding:34px 8px;text-align:center;color:var(--text-muted);line-height:1.7;">
+        <div style="font-size:1.6rem;margin-bottom:10px;">⏳</div>${escapeHtml(status)}
+      </div>`;
+    foot.innerHTML = '';
+    return;
+  }
+
+  if (!_binList.length) {
+    body.innerHTML = `<div style="padding:30px 8px;text-align:center;line-height:1.8;">
+        <div style="font-size:1.8rem;margin-bottom:8px;">🗑</div>
+        <b>The bin is empty.</b><br>
+        <span style="color:var(--text-muted);font-size:0.9rem;">
+          Deleted questions wait here for ${BIN_DAYS} days before they go for good.
+        </span>
+      </div>`;
+    foot.innerHTML = `<button class="btn btn-primary" onclick="binClose()">Done</button>`;
+    return;
+  }
+
+  body.innerHTML = _binList.map(r => {
+    const left = binDaysLeft(r);
+    const urgent = left !== null && left <= 2;
+    const when = _binExpiryMs(r) !== null ? new Date(r.deletedAt).toLocaleString() : 'date unknown';
+    const who = String(r.deletedByName || '').trim();
+    return `<div style="display:flex;gap:14px;align-items:flex-start;padding:14px 15px;border:1px solid var(--border);border-radius:12px;margin-bottom:12px;">
+        <span style="flex:1;min-width:0;line-height:1.65;">
+          <span style="display:block;font-weight:600;">${escapeHtml(r.title || 'Untitled question')}</span>
+          <span style="display:block;color:var(--text-muted);font-size:0.81rem;">
+            ${r.topic ? escapeHtml(r.topic) + ' · ' : ''}deleted ${escapeHtml(when)}${who ? ' by ' + escapeHtml(who) : ''}
+          </span>
+          <span style="display:inline-block;margin-top:7px;font-size:0.76rem;font-weight:600;border-radius:999px;padding:2px 10px;
+                       background:${urgent ? 'rgba(220,60,60,0.1)' : 'rgba(0,0,0,0.05)'};color:${urgent ? '#b3261e' : 'var(--text-muted)'};">
+            ${left === null ? 'kept until you delete it'
+              : left === 0 ? 'goes for good on the next sweep'
+              : left + ' day' + (left === 1 ? '' : 's') + ' left'}
+          </span>
+        </span>
+        <span style="display:flex;gap:8px;flex:0 0 auto;flex-wrap:wrap;justify-content:flex-end;">
+          <button class="btn btn-primary" style="padding:5px 12px;font-size:0.8rem;" onclick="binRestoreClick('${escapeHtml(String(r.id))}')">↩ Restore</button>
+          <button class="btn btn-outline" style="padding:5px 12px;font-size:0.8rem;" onclick="binForgetClick('${escapeHtml(String(r.id))}')">✕ Delete forever</button>
+        </span>
+      </div>`;
+  }).join('');
+
+  foot.innerHTML = `
+    <span style="margin-right:auto;color:var(--text-muted);font-size:0.86rem;">${_binList.length} in the bin</span>
+    <button class="btn btn-outline" onclick="binEmpty()">Empty the bin</button>
+    <button class="btn btn-primary" onclick="binClose()">Done</button>`;
+}
+
+async function binRestoreClick(id) {
+  if (_binBusy) return;
+  _binBusy = true;
+  binRender('Restoring…');
+  const ok = await binRestore(id);
+  _binBusy = false;
+  binRender();
+  if (ok) {
+    showToast('Question restored to the bank ✓', 'success');
+    if (document.querySelector('#page-bank.active')) renderQuestionBank();
+    // It is unread again as far as the checker is concerned, so let the queue
+    // pick it back up rather than waiting for a reload.
+    try { if (document.querySelector('#page-checkq.active')) { _cqBuildQueue(); _cqRender(); } } catch (_) {}
+  }
+}
+
+function binForgetClick(id) {
+  const rec = _binList.find(r => r && r.id === id);
+  if (!rec) return;
+  showConfirm('Delete forever',
+    `“${rec.title || 'Untitled question'}” will be gone for good. This one cannot be undone.`,
+    async () => {
+      _binBusy = true;
+      binRender('Deleting…');
+      await _binForget(id);
+      _binBusy = false;
+      binRender();
+      showToast('Deleted for good', 'info');
+    });
+}
+
+function binEmpty() {
+  if (!_binList.length) return;
+  const n = _binList.length;
+  showConfirm('Empty the bin',
+    `All ${n} question${n === 1 ? '' : 's'} in the bin will be gone for good. This cannot be undone.`,
+    async () => {
+      _binBusy = true;
+      binRender('Emptying the bin…');
+      for (const rec of _binList.slice()) await _binForget(rec.id);
+      _binBusy = false;
+      binRender();
+      showToast('The bin is empty', 'info');
+    });
 }
 
 // =====================================================================
@@ -27162,11 +27789,9 @@ function doctorDismiss(key) { _doctorDismissed.add(key); _doctorRenderResults();
 function doctorOpen(id) { if (_docQById(id)) editQuestion(id); else showToast('That question no longer exists', 'info'); }
 function doctorDelete(id) {
   const q = _docQById(id); if (!q) { _doctorRenderResults(); return; }
-  showConfirm('Delete Question', `Permanently delete “${q.title || 'Untitled'}”? This cannot be undone.`, () => {
-    questionBank = questionBank.filter(x => x.id !== id);
-    deleteQuestionDoc(id);
-    updateCounts();
-    showToast('Question deleted', 'info');
+  showConfirm('Delete question', `“${q.title || 'Untitled'}” goes to the bin. You can restore it there for ${BIN_DAYS} days.`, async () => {
+    if (!await binQuestion(id)) return;
+    showToast(`Moved to the bin — restorable for ${BIN_DAYS} days`, 'info');
     if (document.querySelector('#page-bank.active')) renderQuestionBank();
     _doctorRenderResults();
   });
@@ -27210,6 +27835,7 @@ let _cqPos = 0;                  // where we are in it
 const _cqReviews = new Map();    // id -> { state:'running'|'done'|'error', findings, error }
 let _cqAuto = true;              // run the AI pass automatically on each question
 let _cqLastChecked = '';         // id the last ✓ marked — for Undo
+let _cqLastDeleted = '';         // id the last 🗑 binned — for the same Undo
 
 // ---- reading a question -------------------------------------------------
 function _cqCheckedAt(q) { return (q && q.checked && q.checked.at) || ''; }
@@ -27484,8 +28110,15 @@ function renderCheckQPage() {
 function _cqRender() {
   const host = document.getElementById('cqBody');
   if (!host) return;
+  // ONE Undo, for whichever of the two undoable things happened last. A binned
+  // question is no longer in the bank, so it is checked for in the bin instead.
   const undo = document.getElementById('cqUndoBtn');
-  if (undo) undo.style.display = _cqLastChecked && _docQById(_cqLastChecked) ? '' : 'none';
+  if (undo) {
+    const canUndoDelete = !!(_cqLastDeleted && _binList.some(r => r && r.id === _cqLastDeleted));
+    const canUndoCheck = !!(_cqLastChecked && _docQById(_cqLastChecked));
+    undo.style.display = (canUndoDelete || canUndoCheck) ? '' : 'none';
+    undo.textContent = canUndoDelete ? '↩ Undo delete' : '↩ Undo last ✓';
+  }
   const q = _cqCurrent();
   _cqUpdateBadge();
   if (!q) {
@@ -27533,6 +28166,11 @@ function _cqCardHtml(q) {
         <button class="btn btn-outline" style="${btn}" onclick="cqOpenEditor('${id}')">✏️ Open in editor</button>
         <button class="btn btn-outline" style="${btn}" onclick="cqSkip()">⏭ Skip for now</button>
         <button class="btn btn-outline" style="${btn}margin-left:auto;" onclick="cqRecheck()">🤖 Check with AI</button>
+        <!-- Far right and on its own, away from the buttons this queue is worked
+             with, because it is the one action here that removes something. It
+             asks nothing first: the question goes to the bin, ↩ Undo is at the
+             top of the page, and the bin holds it for a week. -->
+        <button class="btn btn-outline cq-del" style="${btn}" title="Move this question to the bin — restorable for ${BIN_DAYS} days" onclick="cqDelete('${id}')">🗑 Delete</button>
       </div>
     </div>`;
 }
@@ -27645,7 +28283,42 @@ async function cqLooksFine(id) {
     _cqRender();
   }
 }
+// Move the question on show to the bin and step on. No confirm: the bin holds
+// it for a week, ↩ Undo is at the top of the page, and this is a queue somebody
+// is working through — a dialog on every deletion is how a queue stops getting
+// worked through.
+async function cqDelete(id) {
+  const q = _docQById(id);
+  if (!q) { _cqRender(); return; }
+  const title = q.title || 'Untitled question';
+  if (!await binQuestion(id)) { _cqRender(); return; }
+  _cqLastDeleted = id;
+  _cqLastChecked = '';          // the Undo button means the deletion now
+  _cqReviews.delete(id);        // nothing left to have an opinion about
+  _cqRender();
+  if (document.querySelector('#page-bank.active')) renderQuestionBank();
+  showToast(`“${title}” moved to the bin — restorable for ${BIN_DAYS} days`, 'info');
+}
+
+// One Undo for both actions, newest first: a deletion if that was the last
+// thing, otherwise the last ✓.
 async function cqUndo() {
+  if (_cqLastDeleted && _binList.some(r => r && r.id === _cqLastDeleted)) {
+    const id = _cqLastDeleted;
+    _cqLastDeleted = '';
+    const ok = await binRestore(id);
+    if (ok) {
+      // It comes back unchecked, so put the queue back on it rather than
+      // leaving it to surface again whenever the queue is next rebuilt.
+      _cqBuildQueue();
+      const at = _cqQueue.indexOf(id);
+      if (at >= 0) _cqPos = at;
+      showToast('Question restored ✓', 'success');
+    }
+    _cqRender();
+    if (document.querySelector('#page-bank.active')) renderQuestionBank();
+    return;
+  }
   const id = _cqLastChecked;
   const q = id && _docQById(id);
   if (!q) { _cqLastChecked = ''; _cqRender(); return; }
@@ -34012,6 +34685,20 @@ window.showConfirm = showConfirm;
 window.closeConfirm = closeConfirm;
 window.renderBlocks = renderBlocks;
 window.renderQuestionBank = renderQuestionBank;
+// One-time rescue of the questions this app wrote into the Science bank before
+// v1.3.0 — see LEGACY BANK RESCUE.
+window.lbOpen = lbOpen;
+window.lbClose = lbClose;
+window.lbRescan = lbRescan;
+window.lbToggle = lbToggle;
+window.lbToggleAll = lbToggleAll;
+window.lbMove = lbMove;
+// 🗑 The bin — a deleted question is restorable for BIN_DAYS.
+window.binOpen = binOpen;
+window.binClose = binClose;
+window.binRestoreClick = binRestoreClick;
+window.binForgetClick = binForgetClick;
+window.binEmpty = binEmpty;
 window.setBankView = setBankView;
 window.toggleBankTopicMenu = toggleBankTopicMenu;
 window.toggleBankTopic = toggleBankTopic;
@@ -34262,6 +34949,7 @@ window.cqRefresh = cqRefresh;
 window.cqSkip = cqSkip;
 window.cqRecheck = cqRecheck;
 window.cqUndo = cqUndo;
+window.cqDelete = cqDelete;
 window.cqToggleAuto = cqToggleAuto;
 window.cqLooksFine = cqLooksFine;
 window.cqOpenEditor = cqOpenEditor;

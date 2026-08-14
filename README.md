@@ -64,6 +64,15 @@ statements into the project's existing rules **alongside** the Science app's, in
 the same `service cloud.firestore` block. Do not replace that file with this one:
 that would lock the Science app out of its own data.
 
+**Upgrading to v1.3.0 or later needs the rules deployed again.** Three
+collections were renamed in v1.3.0 to stop the Science app sharing them —
+`mistakesEn`, `flashcardsEn` and `scheduledQuestionsEn` — and v1.4.0 adds
+`binEn` (deleted questions, restorable for 7 days). The three renamed ones are
+written fire-and-forget, so if the rules still name only the old ones the writes
+are denied with nothing shown on screen: the mistake log simply stops filling.
+Without `binEn`, deleting a question fails and says so, and the question stays
+in the bank. Redeploy the rules first, then the app.
+
 ### 2. Point the bank at yourself
 
 Sign in as the teacher account, then write the pointer every student resolves

@@ -32,6 +32,11 @@ service cloud.firestore {
 
       match /questionsEn/{qid}      { allow read: if signedIn(); allow write: if isSelf(uid); }
       match /vettingEn/{qid}        { allow read: if signedIn(); allow write: if isSelf(uid); }
+      // The bin: questions deleted in the last 7 days, restorable until then.
+      // Deliberately NOT readable by every signed-in account the way the bank
+      // is — a deleted question must not be servable to a student, and the only
+      // people who ever read this are the ones who can put it back.
+      match /binEn/{qid}            { allow read, write: if isSelf(uid); }
       match /settingsEn/{sid}       { allow read: if signedIn(); allow write: if isSelf(uid); }
       match /teachingNotesEn/{nid}  { allow read: if signedIn(); allow write: if isSelf(uid); }
       match /worksheetsEn/{wid}     { allow read, write: if isSelf(uid); }
@@ -44,16 +49,29 @@ service cloud.firestore {
       // subcollection the app WRITES needs a line here or the write is denied —
       // silently, because all three of these are fire-and-forget.
       //
-      // mistakes  — one record per wrong answer; what the revision cards and
-      //             the learning-gap list are both built from.
-      // flashcards— the generated revision decks.
-      // scheduledQuestions — the teacher's queued releases.
+      // mistakesEn  — one record per wrong answer; what the revision cards and
+      //               the learning-gap list are both built from.
+      // flashcardsEn— the generated revision decks.
+      // scheduledQuestionsEn — the teacher's queued releases.
+      //
+      // These three carried their PLAIN names until v1.3.0, which meant the
+      // Science app was writing to the same three collections under the same
+      // user: one mistake log and one revision deck holding both subjects, and
+      // a Science question queued for release landing in the ENGLISH bank on
+      // its release date. Renaming them is what stops that.
       //
       // The learning-gap list itself needs no line: it is a single document at
       // settingsEn/learningGaps, already covered above.
-      match /mistakes/{mid}            { allow read, write: if isSelf(uid); }
-      match /flashcards/{fid}          { allow read, write: if isSelf(uid); }
-      match /scheduledQuestions/{sqid} { allow read, write: if isSelf(uid); }
+      match /mistakesEn/{mid}            { allow read, write: if isSelf(uid); }
+      match /flashcardsEn/{fid}          { allow read, write: if isSelf(uid); }
+      match /scheduledQuestionsEn/{sqid} { allow read, write: if isSelf(uid); }
+
+      // The one-time rescue (📦 From Science bank, `_lb*` in app.js) reads and
+      // deletes from the SCIENCE app's questions / vetting / scheduledQuestions
+      // under the admin's own uid. It needs no line here: those collections are
+      // covered by the Science app's own rules, in the same rules file, and the
+      // account running the rescue is their owner. Do not add English rules for
+      // them — this file describes English collections only.
 
       // An employee authors straight into the teacher's bank, so they need to
       // write there. Widen this only if you actually hire one.

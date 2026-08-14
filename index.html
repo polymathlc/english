@@ -6651,6 +6651,13 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
                whole backlog can be done in one go. -->
           <button class="btn btn-outline admin-only" onclick="openBulkTags()"
             title="Tag many questions at once — add or remove the same tags across everything shown, or have the AI tag each one from the vocabulary you've already built">🏷 Bulk tag</button>
+          <!-- One-time: the questions this app saved into the Science bank before
+               v1.3.0, when the two shared one. Quiet on purpose — it does nothing
+               once the Science bank holds no English questions. -->
+          <button class="btn btn-outline admin-only" onclick="lbOpen()"
+            title="Move questions this app saved into the Science portal's bank before v1.3.0 back into the English bank">📦 From Science bank</button>
+          <button class="btn btn-outline" onclick="binOpen()"
+            title="Questions deleted in the last 7 days — restore one, or delete it for good">🗑 Bin<span class="bin-count"></span></button>
           <div class="view-toggle" id="bankViewToggle" role="group" aria-label="Question bank view">
             <button type="button" data-bank-view="list" onclick="setBankView('list')" title="List view — full titles, tags and actions">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
@@ -6733,6 +6740,10 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
           .cq-preview{ padding:6px 22px 18px; }
           .cq-preview-inner{ border:1px solid var(--border); border-radius:12px; padding:16px 18px; background:#fff; font-size:0.88rem; line-height:1.7; max-height:520px; overflow:auto; }
           .cq-actions{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; padding:16px 22px 20px; border-top:1px solid var(--border); background:var(--surface-alt,#fafbfa); }
+          /* The one button here that takes something away — tinted so the eye
+             finds it on purpose rather than on the way past. */
+          .cq-del{ color:#b3261e; border-color:rgba(179,38,30,0.35); }
+          .cq-del:hover{ background:rgba(179,38,30,0.07); border-color:rgba(179,38,30,0.6); }
           .cq-empty{ border:1px solid var(--border); border-radius:16px; background:var(--surface,#fff); padding:44px 28px; text-align:center; }
           .cq-empty h3{ margin:0 0 10px; font-size:1.02rem; }
           .cq-empty p{ margin:0 auto 18px; font-size:0.87rem; color:var(--text-muted); line-height:1.75; max-width:460px; }
@@ -6748,6 +6759,10 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
           <div class="cq-intro-row">
             <button class="btn btn-outline" style="font-size:0.85rem;" onclick="cqRefresh()">🔄 Refresh queue</button>
             <button class="btn btn-outline" id="cqUndoBtn" style="font-size:0.85rem;display:none;" onclick="cqUndo()">↩ Undo last ✓</button>
+            <!-- Right beside the queue, because this is where questions get
+                 deleted and so this is where somebody looks for one back. -->
+            <button class="btn btn-outline" style="font-size:0.85rem;" onclick="binOpen()"
+                    title="Questions deleted in the last 7 days — restore one, or delete it for good">🗑 Bin<span class="bin-count"></span></button>
             <label class="cq-auto"><input type="checkbox" id="cqAuto" checked onchange="cqToggleAuto(this.checked)"> Check each question with AI automatically</label>
           </div>
         </div>
@@ -7953,6 +7968,44 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
 <!-- ==================== BULK TAGGING (Admin) ====================
      Works on a set — the questions picked in the grid, or everything the current
      filters show. Body is rendered by renderBulkTags(). -->
+<!-- ==================== THE BIN — deleted questions, restorable for 7 days ====================
+     A deletion is a MOVE (questionsEn → binEn), not a deleteDoc: a question is
+     somebody's work, and the Check Questions queue is exactly where a tired
+     person taps quickly. Anything here can be put back in one tap until its
+     seventh day, after which the next sign-in sweeps it for good. -->
+<div class="confirm-overlay" id="binOverlay">
+  <div class="confirm-dialog" style="max-width:700px;text-align:left;max-height:90vh;overflow-y:auto;">
+    <h3 style="margin-bottom:6px;">🗑 Bin</h3>
+    <p style="color:var(--text-muted);font-size:0.85rem;line-height:1.7;margin-bottom:22px;">
+      Deleted questions wait here for <b>7 days</b>, then go for good. A question in the bin is out of the
+      bank entirely — no practice, worksheet or search will offer it — and restoring puts it straight back
+      where it was. The sweep runs when someone opens the app, so nothing disappears while you are reading it.
+    </p>
+    <div id="binBody"></div>
+    <div class="btn-group" id="binFoot" style="justify-content:flex-end;align-items:center;margin-top:22px;"></div>
+  </div>
+</div>
+
+<!-- ==================== MOVE QUESTIONS OUT OF THE SCIENCE BANK (Admin, one-time) ====================
+     Until v1.3.0 this app's four bank-path helpers spelled the Science app's
+     collection names inline, so every English question it saved went into the
+     Science bank. The code now uses its own collections; this moves across what
+     was written to the wrong one. Copy → read back → delete, so a question is
+     never removed on the strength of a write having merely been issued. -->
+<div class="confirm-overlay" id="legacyBankOverlay">
+  <div class="confirm-dialog" style="max-width:720px;text-align:left;max-height:90vh;overflow-y:auto;">
+    <h3 style="margin-bottom:6px;">📦 Move questions out of the Science bank</h3>
+    <p style="color:var(--text-muted);font-size:0.85rem;line-height:1.7;margin-bottom:22px;">
+      Until v1.3.0 this app saved into the Science portal's question bank instead of its own, so the two
+      shared one bank. They are separate now — this brings the English questions across, and takes them
+      out of the Science app at the same time. Each one is copied first and only removed once the copy
+      has been read back, so nothing is lost if it stops half way. Safe to run more than once.
+    </p>
+    <div id="lbBody"></div>
+    <div class="btn-group" id="lbFoot" style="justify-content:flex-end;align-items:center;margin-top:22px;"></div>
+  </div>
+</div>
+
 <div class="confirm-overlay" id="bulkTagOverlay">
   <div class="confirm-dialog" style="max-width:660px;text-align:left;max-height:90vh;overflow-y:auto;">
     <h3 style="margin-bottom:4px;">🏷 Bulk tag questions</h3>
