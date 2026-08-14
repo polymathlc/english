@@ -6150,6 +6150,10 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
         <span class="ico">🃏</span> Revision Cards
         <span class="badge" id="fcDueBadge" style="display:none;">0</span>
       </div>
+      <div class="nav-item student-only" data-page="gaps" onclick="navigateTo('gaps')" style="display:none;" title="My Gaps — the exact grammar points and words you don't understand yet, with questions picked and written for each one.">
+        <span class="ico">🎯</span> My Gaps
+        <span class="badge" id="lgGapBadge" style="display:none;">0</span>
+      </div>
       <div class="nav-item student-only" data-page="myreport" onclick="navigateTo('myreport')" style="display:none;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
         My Report
@@ -7262,6 +7266,27 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
       </div>
       <div class="page-body" style="max-width:760px;">
         <div id="flashcardsContainer"></div>
+      </div>
+    </div>
+
+    <!-- ===== PAGE: MY GAPS (Student Only) =====
+         The named grammar points and words this student does not yet
+         understand, worked out from what they actually got wrong. Each one
+         picks its own practice out of the bank, and can have a brand-new
+         question written for it against the day's credits. -->
+    <div class="page" id="page-gaps">
+      <div class="page-header">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="mobile-toggle" onclick="toggleSidebar()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></button>
+            <h2>🎯 My Gaps</h2>
+          </div>
+          <div class="subtitle">The exact things you don't understand yet — and questions picked and written for each one</div>
+        </div>
+        <button class="btn btn-outline" onclick="renderGapsPage()" style="font-size:0.82rem;">↻ Refresh</button>
+      </div>
+      <div class="page-body" style="max-width:760px;">
+        <div id="gapsContainer"></div>
       </div>
     </div>
 
@@ -8921,6 +8946,71 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
 @media (max-width:560px){
   .fc-card{ padding:26px 20px 22px; min-height:210px; }
   .fc-card-front{ font-size:1.06rem; }
+}
+
+/* ========== LEARNING GAPS + DAILY RETRY CREDITS ==========
+   The list of what this student does not understand yet. Same spacing scale as
+   the revision cards above — a card here is read, not skimmed, so it gets room:
+   title, then meta, then the evidence, then the buttons, each clearly apart. */
+.lg-credit-bar{ display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap;
+  padding:18px 20px; border:1px solid var(--accent-orange); background:var(--accent-orange-light);
+  border-radius:14px; margin-bottom:24px; }
+.lg-credit-title{ font-weight:700; font-size:0.98rem; color:var(--accent-orange); }
+.lg-credit-sub{ font-size:0.82rem; line-height:1.65; color:var(--text-muted); margin-top:5px; max-width:52ch; }
+.lg-credit-chip{ flex:0 0 auto; font-size:0.75rem; font-weight:700; letter-spacing:0.02em; white-space:nowrap;
+  padding:7px 13px; border-radius:999px; background:var(--surface); color:var(--accent-orange);
+  border:1px solid var(--accent-orange); }
+
+.lg-section-head{ display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin:28px 0 14px; }
+.lg-section-head h3{ font-size:1rem; margin:0; }
+.lg-section-sub{ font-size:0.79rem; color:var(--text-muted); }
+
+.lg-gap-card{ border:1px solid var(--border); border-radius:14px; background:var(--surface);
+  padding:19px 20px; margin-bottom:14px; }
+.lg-gap-card.cleared{ background:var(--surface-alt); border-style:dashed; }
+.lg-gap-top{ display:flex; align-items:flex-start; gap:14px; }
+.lg-gap-icon{ flex:0 0 auto; font-size:1.3rem; line-height:1.3; }
+.lg-gap-name{ min-width:0; flex:1; }
+.lg-gap-label{ font-size:0.98rem; font-weight:700; line-height:1.45; }
+.lg-gap-meta{ display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin-top:7px;
+  font-size:0.77rem; color:var(--text-muted); }
+.lg-kind-chip{ font-weight:700; letter-spacing:0.02em; padding:3px 9px; border-radius:999px;
+  background:var(--primary-light); color:var(--primary); }
+.lg-cleared-chip{ font-weight:700; color:var(--primary); }
+.lg-streak-chip{ font-weight:700; color:var(--accent-orange); }
+.lg-gap-note{ font-size:0.86rem; line-height:1.7; color:var(--text); margin-top:13px; }
+.lg-gap-evidence{ margin-top:13px; padding:12px 14px; border-radius:10px; background:var(--bg);
+  font-size:0.82rem; line-height:1.75; }
+.lg-ev-key{ font-weight:700; color:var(--text-muted); }
+.lg-gap-actions{ display:flex; flex-wrap:wrap; gap:10px; margin-top:17px; }
+.lg-gap-actions .btn{ font-size:0.83rem; }
+.lg-got-it{ margin-left:auto; }
+.lg-gap-host:not(:empty){ margin-top:16px; }
+.lg-gen-wait{ padding:16px; text-align:center; font-size:0.86rem; color:var(--text-muted); }
+
+.lg-empty{ text-align:center; padding:46px 28px; border:1px dashed var(--border); border-radius:14px;
+  background:var(--surface-alt); }
+.lg-empty-icon{ font-size:2.1rem; }
+.lg-empty-title{ font-size:1.02rem; font-weight:700; margin-top:12px; }
+.lg-empty-sub{ font-size:0.86rem; line-height:1.75; color:var(--text-muted); margin:10px auto 0; max-width:46ch; }
+.lg-empty .btn{ margin-top:20px; }
+
+/* The offer of another go, injected under a question that lost marks. */
+.lg-retry-offer{ margin-top:16px; padding:16px 18px; border:1px solid var(--accent-orange);
+  background:var(--accent-orange-light); border-radius:12px; }
+.lg-retry-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.lg-retry-title{ font-weight:700; font-size:0.93rem; color:var(--accent-orange); }
+.lg-retry-sub{ font-size:0.81rem; line-height:1.65; color:var(--text-muted); margin-top:5px; max-width:52ch; }
+.lg-retry-actions{ display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+.lg-retry-actions:empty{ display:none; }
+.lg-retry-offer .lg-gen-card{ margin-top:16px; }
+/* A generated question sits INSIDE another card, so it must not repeat the
+   outer card's shadow — the doubled edge reads as a rendering fault. */
+.lg-gen-card{ box-shadow:none; border:1px solid var(--border); }
+
+@media (max-width:560px){
+  .lg-got-it{ margin-left:0; }
+  .lg-gap-actions .btn{ flex:1; min-width:140px; justify-content:center; }
 }
 
 </style>

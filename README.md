@@ -36,6 +36,15 @@ Quick practice, topical practice, worksheet practice, past papers, Snap & Mark
 flashcards built from your own mistakes, a progress report, the community board,
 and Ai-nstein — the study buddy that follows you from page to page.
 
+**My Gaps** keeps the list of what you don't understand *yet* — the actual
+grammar point or word, not just the topic — worked out from the questions you
+get wrong. Each gap picks its own practice out of the question bank, and when
+there is nothing left in there for it, a brand-new question is written for that
+gap on the spot. Every student gets **30 credits a day**: one credit buys another
+question on something you just got wrong, so a mistake becomes a second attempt
+instead of a dead end. A gap closes after three right answers in a row, and
+re-opens the moment you slip on it again.
+
 ---
 
 ## Setting it up
