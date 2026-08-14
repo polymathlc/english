@@ -283,6 +283,51 @@ The student drags a word into a blank and it is struck off.
   rendering prints a draggable word bank over a passage of drop targets.
 - Run **`node tools/passage-cloze-tests.mjs`** after touching any of it.
 
+### 📝 The OPEN cloze (`co*`, block type `clozeopen`) — v1.10.0
+
+The same passage with numbered blanks and **nothing to choose from**: the
+student types a word into every blank and submits the lot at once. It arrives
+from a screenshot — the AI reads the page, transcribes the passage and makes the
+blanks itself.
+
+**It exists because of one fact: a cloze blank almost never has a single right
+answer.** *"Dishes like chicken rice ______ people from all backgrounds
+together"* takes bring, draw, pull, tie. That is what separates all three
+members of the family — `clozebank` gives a closed list so the mark is exact,
+`fillblank` marks one word against ONE expected answer, and here neither is
+true.
+
+- **A blank stores EVERY answer it accepts**, inside the same `[[markup]]`,
+  pipe-separated: `[[bring|draw|pull]]`. One field, one parser, and no nested
+  array for Firestore to reject. **`coAlts` is the ONE place that string becomes
+  a list**; the first entry is the primary and leads the printed key.
+- **Anything on that list is marked correct locally** (`coAccepts`) — no AI
+  call, no cost, and no chance of a model talking itself out of a word the
+  teacher already accepted. Case and stray punctuation are normalised away; the
+  apostrophe and hyphen are NOT, because "its"/"it's" are different words.
+- **Everything else goes to the AI in ONE call carrying the whole passage**
+  (`coMarkPassage`). A cloze word is right or wrong because of the sentence
+  around it, so a blank sent alone cannot be marked fairly — that is all
+  `fillblank` can do. The prompt says in as many words that **the stored list is
+  not exhaustive**; without that the model just re-checks the list and the whole
+  feature collapses back into `fillblank`.
+- **The whole passage submits at ONE button.** Fifteen blanks behind fifteen
+  Check buttons is a different exercise, and it leaks the answers one at a time.
+- **Every blank is the SAME width** (`_coSlotWidth`, taken from the longest
+  answer in the passage). `fillblank` sizes each box from its own answer; here
+  the student has to think of the word, so a box wider than its neighbours is a
+  hint the paper never gives.
+- **The AI builder must NOT run the passage through `stripBrackets`** — that
+  helper exists to pull `[[ ]]` out of a model answer, and on a cloze it erases
+  every blank, leaving a paragraph that renders and prints perfectly and asks
+  the student nothing.
+- `_coText` keeps the passage's paragraphs (a run of blank lines collapses to
+  one — at line-height 3.1 two `<br>`s are six lines of nothing).
+- The rule the model reads lives in **`_partsPromptRules()`** with the synthesis
+  one; ✨ **Suggest alternatives** (`coAiAlternatives`) does the same job for a
+  hand-typed passage and **only ever widens** a blank's list, never narrows it.
+- Run **`node tools/open-cloze-tests.mjs`** after touching any of it.
+
 ## ✍️ Synthesis & transformation (`sy*`, block type `synthesis`)
 
 The last section of the paper: one or two sentences, a word the student must
@@ -826,6 +871,12 @@ reported in chat, to know whether the deploy actually went through.
     one line early swallows the first option list; a question number read off a
     quantity cuts the passage in half; a bank that does not contain one of its
     own answers renders and prints perfectly and is unanswerable.
+  - `node tools/open-cloze-tests.mjs` — the open cloze's accepted-answer list,
+    what is marked right without the AI, and the passage the marker is sent.
+    Drop an alternative and the word is marked wrong while the key still lists
+    it as acceptable; send the blank without its passage and there is no way to
+    judge it; let `stripBrackets` near the passage and every blank vanishes into
+    a paragraph that looks perfectly fine and asks the student nothing.
 
 ### Two CSS traps in `index.html`
 

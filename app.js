@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.9.2';
+const APP_VERSION = 'v1.10.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -3250,6 +3250,15 @@ function createBlock(type) {
       block.once = true;        // each word used only once
       block.sortBank = true;    // alphabetical, so the order gives nothing away
       break;
+    case 'clozeopen':
+      // The same [[markup]] again, but a blank stores EVERY word it accepts,
+      // pipe-separated — `[[bring|draw|pull]]`. There is no bank to pick from,
+      // so one stored answer would fail most of a class for being right in a
+      // different way.
+      block.text = '';
+      block.startNum = CO_START_DEFAULT;
+      block.intro = '';         // blank → generated from the passage itself
+      break;
     case 'workingSpace':
       block.lines = 6;
       block.annotate = false;   // true → blank annotation pad in practice (AI-marked)
@@ -4390,6 +4399,7 @@ function renderBlocks() {
       case 'openLines':   badgeClass = 'plainanswer-badge'; badgeIcon = '✍️'; badgeLabel = 'Open-Ended Answer'; break;
       case 'fillblank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔲'; badgeLabel = 'Fill in the Blanks'; break;
       case 'clozebank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔤'; badgeLabel = 'Comprehension Cloze (word bank)'; break;
+      case 'clozeopen':   badgeClass = 'plainanswer-badge'; badgeIcon = '📝'; badgeLabel = 'Comprehension Cloze (no word bank)'; break;
       case 'synthesis':   badgeClass = 'plainanswer-badge'; badgeIcon = '✍️'; badgeLabel = 'Synthesis & Transformation'; break;
       case 'workingSpace':badgeClass = 'plainanswer-badge'; badgeIcon = block.annotate ? '✍️' : '🧮'; badgeLabel = block.annotate ? 'Annotation Working Area' : 'Working Space'; break;
       case 'commonMistake':badgeClass = 'explanation-badge'; badgeIcon = '⚠️'; badgeLabel = 'Common Mistake'; break;
@@ -5494,6 +5504,32 @@ function renderImportedBlockEditorBody(block) {
           <div id="cbPrev_${id}" class="cb-ed-prev">${_cbEditorPreviewHtml(block)}</div>
         </div>`;
     }
+    case 'clozeopen': {
+      const nb = _coBlanks(block).length;
+      const st = _coStart(block);
+      const thin = _coBlanks(block).filter(r => coAlts(r).length < 2).length;
+      return `
+        <div class="block-body">
+          <textarea id="coText_${id}" class="form-input" rows="9" placeholder="Paste the whole passage, then click the words below to blank them — e.g.  Dishes like chicken rice, laksa and roti prata [[bring|draw|pull]] people from all backgrounds together."
+                    style="width:100%;box-sizing:border-box;font-family:inherit;font-size:0.92rem;line-height:1.7;resize:vertical;"
+                    oninput="saveBlockField('${id}','text',this.value); coSyncEditor('${id}')">${escapeHtml(block.text || '')}</textarea>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:10px 0 6px;line-height:1.55;">👆 Click a word below to turn it into a numbered blank (click again to undo). There is <strong>no word bank</strong> — students type their own word, so list every word you would accept, separated by <code>|</code>: <code>[[bring|draw|pull]]</code>. <strong>The first one leads the answer key.</strong></div>
+          <div id="coChips_${id}" class="fb-chip-wrap">${_fbChipsHtml(id, block.text || '', 'coToggleToken')}</div>
+
+          <div class="cb-ed-row">
+            <label class="cb-ed-field" style="max-width:190px;">First blank is numbered
+              <input class="form-input" type="number" min="1" max="999" value="${st}"
+                     oninput="saveBlockNum('${id}','startNum',this.value,1,999); coSyncEditor('${id}')"></label>
+            <button type="button" class="btn btn-outline" style="padding:6px 14px;font-size:0.82rem;"
+                    onclick="coAiAlternatives('${id}', this)"
+                    title="Read the passage and add every other word a marker should accept in each blank">✨ Suggest alternatives</button>
+          </div>
+          ${nb && thin ? `<div class="cb-ed-warn">⚠ ${thin} of ${nb} blank${nb === 1 ? '' : 's'} accept${thin === 1 ? 's' : ''} only ONE word. A cloze blank usually has several right answers — the AI marker will still judge the passage, but the printed key will be thin.</div>` : ''}
+
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:14px 0 4px;">Student preview — <span id="coCount_${id}">${nb ? `${nb} blank${nb === 1 ? '' : 's'} (${st}–${st + nb - 1})` : 'no blanks yet'}</span>:</div>
+          <div id="coPrev_${id}" class="cb-ed-prev">${_coEditorPreviewHtml(block)}</div>
+        </div>`;
+    }
     case 'workingSpace':
       return `
         <div class="block-body">
@@ -5619,6 +5655,10 @@ function renderImportedBlockStudent(block, q) {
       return cbHasBlanks(block)
         ? `<div style="margin:10px 0;">${_cbEditorPreviewHtml(block)}</div>`
         : `<div class="cb-passage" style="margin:10px 0;">${escapeHtml(stripHtml(block.text || ''))}</div>`;
+    case 'clozeopen':
+      return coHasBlanks(block)
+        ? `<div style="margin:10px 0;">${_coEditorPreviewHtml(block)}</div>`
+        : `<div class="co-passage" style="margin:10px 0;">${escapeHtml(stripHtml(block.text || ''))}</div>`;
     case 'commonMistake': {
       const c = COMMON_MISTAKE_COLORS[block.color] || COMMON_MISTAKE_COLORS.teal;
       return `<div style="margin:10px 0;border-left:4px solid ${c};background:${c}14;padding:8px 12px;border-radius:6px;">
@@ -8883,6 +8923,23 @@ function buildBlocksFromAi(data) {
       } else if (t === 'explanation') {
         const expl = stripBrackets(b.text || b.content);
         if (expl) blocks.push({ id: generateBlockId(), type: 'explanation', content: expl });
+      } else if (t === 'clozeopen' || t === 'cloze') {
+        // The open cloze: one passage, numbered blanks, no word bank.
+        //
+        // The passage is taken RAW — never through stripBrackets, which exists
+        // to pull [[ ]] out of a model answer and would erase every blank in
+        // the passage, leaving a plain paragraph that looks perfectly fine and
+        // asks the student nothing.
+        const passage = String(b.text || b.passage || b.content || '');
+        if (/\[\[[\s\S]+?\]\]/.test(passage)) {
+          const st = Number(b.startNum != null ? b.startNum : b.start);
+          blocks.push({
+            id: generateBlockId(), type: 'clozeopen',
+            text: passage,
+            startNum: (isFinite(st) && st >= 1 && st <= 999) ? Math.round(st) : CO_START_DEFAULT,
+            intro: stripBrackets(b.intro || '')
+          });
+        }
       } else if (t === 'synthesis') {
         // The whole question lives on the block: the sentence(s) given, the word
         // provided and where it is printed, and the rewrite it should produce.
@@ -9486,6 +9543,11 @@ function _partsPromptRules() {
     `- SYNTHESIS & TRANSFORMATION — a section that says "rewrite the given sentence(s) using the word(s) provided", where each question shows one or two sentences, then ruled lines with a word printed at one end of the first rule. Use a {"type":"synthesis"} block for EACH of those questions, never a "text" plus an answer block:\n` +
     `    {"type":"synthesis","part":"a","given":"We admire Mr Kwan. He is our local football player.","cue":"whom","cuePos":"use","answer":"Mr Kwan, whom we admire, is our local football player.","marks":2}\n` +
     `  "given" is the sentence(s) printed above the rules, copied exactly. "cue" is the word or words printed ON the rules. "cuePos" is "start" when that word is printed at the START of the first rule (it is the given opening of the answer, e.g. "This plot of corn ______") and "use" when it is printed at the END of a rule (the sentence merely has to contain it, e.g. "______ whom"). "answer" is the correct rewrite, which you work out yourself — ONE sentence meaning exactly the same as "given", using the word provided. Letter these parts (a), (b), (c) like any others.\n` +
+    `- COMPREHENSION CLOZE — a PASSAGE printed with numbered blanks in it, "(46)", "(47)", "(48)"… under the rules, and NO list of words to choose from. Use ONE {"type":"clozeopen"} block for the WHOLE passage, never one question per blank and never a "text" plus answer blocks:\n` +
+    `    {"type":"clozeopen","startNum":46,"text":"Hawker culture is one of Singapore's most treasured traditions. Dishes like chicken rice, laksa and roti prata [[bring|draw|pull]] people from all backgrounds together, creating a strong [[sense|feeling]] of community."}\n` +
+    `  "text" is the passage transcribed EXACTLY as printed, word for word and punctuation for punctuation, with each numbered blank replaced by [[answers]] IN PLACE. Do NOT keep the printed "(46)" markers in the text — the numbering comes from "startNum", which is the number of the FIRST blank on the page.\n` +
+    `  Inside each [[ ]] put EVERY word a marker should accept in that blank, separated by | , with the single best word FIRST — for example [[bring|draw|pull]]. You are working the answers out from the passage yourself, so think about what actually fits: a cloze blank almost always has SEVERAL correct words, and listing only one marks most of a class wrong for being right in a different way. Give 2 to 4 words per blank where they genuinely fit, and one only where nothing else does. Each must be in the exact form the sentence needs (the right tense, number and part of speech).\n` +
+    `  If the passage DOES print a list of words to choose from above it, that is a different exercise — do not use "clozeopen" for it.\n` +
     `- Give EACH part its own answer block ("answer" or "plainanswer") directly under the text block that asks it, so every part has its own model answer.\n` +
     `- EXPLANATIONS follow the parts: a question with NO parts finishes with ONE "explanation" block; a question WITH parts gets ONE explanation block PER PART, placed directly after that part's own answer block and explaining ONLY that part's question and answer. Never write one explanation covering several parts, and never put an explanation about part (b) underneath part (a).\n`;
 }
@@ -10926,9 +10988,9 @@ function extractQuestionSearchText(q) {
       parts.push(stripHtmlToText(block.answer));
     } else if (block.type === 'answerKey') {
       parts.push(stripHtmlToText(block.text));
-    } else if (block.type === 'fillblank') {
+    } else if (block.type === 'fillblank' || block.type === 'clozebank' || block.type === 'clozeopen') {
       // [[answer]] markers become plain words so the blanked answers are searchable too
-      parts.push(stripHtmlToText(String(block.text || '').replace(/\[\[|\]\]/g, ' ')));
+      parts.push(stripHtmlToText(String(block.text || '').replace(/\[\[|\]\]/g, ' ').replace(/\|/g, ' ')));
     }
   });
   return parts.join(' ').toLowerCase();
@@ -11594,6 +11656,9 @@ function getQuestionPreview(q) {
       return clean('Rewrite: ' + syGiven(block)).substring(0, 150);
     }
     if (block.type === 'clozebank' && (block.text || '').trim()) {
+      return clean('Cloze: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
+    }
+    if (block.type === 'clozeopen' && (block.text || '').trim()) {
       return clean('Cloze: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
     }
   }
@@ -13832,6 +13897,18 @@ function doPrintWorksheetOpen() {
           if (cbHasBlanks(block)) {
             qHtml += cbPrintHtml(block);
             _pushAnswerKeySection(qSections, 'Comprehension cloze', cbAnswerKeyText(block), bPart);
+          } else {
+            qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
+          }
+          break;
+        }
+        // Its own case for `fillblank`'s reason, one step worse: the read-only
+        // rendering prints every answer inside its blank, so a cloze worksheet
+        // would come off the printer already filled in.
+        case 'clozeopen': {
+          if (coHasBlanks(block)) {
+            qHtml += coPrintHtml(block);
+            _pushAnswerKeySection(qSections, 'Comprehension cloze', coAnswerKeyText(block), bPart);
           } else {
             qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
           }
@@ -19600,6 +19677,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   const mcqItems = [];
   const fbBlocks = [];
   const cbBlocks = [];
+  const coBlocks = [];
   const isAnnot = !!(q && q.annotation);
   let annotCount = 0;
   // Blocks are grouped into visual PARTS: a run of question content (text,
@@ -19740,6 +19818,25 @@ function buildOpenBody(q, containerSel, markCfg) {
         addAnswer(cbStudentHtml(block, containerSel, oidxs));
         break;
       }
+      case 'clozeopen': {
+        // Each blank is an ITEM, exactly as the other two clozes register
+        // theirs, so the score, the mistake log and "have all the parts been
+        // marked?" count this one without knowing what it is.
+        const answers = _coBlanks(block);
+        if (!answers.length) { add(`<div class="co-passage">${escapeHtml(stripHtml(block.text || ''))}</div>`); break; }
+        const start = _coStart(block);
+        const oidxs = answers.map((raw, i) => {
+          const oidx = items.length;
+          // The model answer is the WHOLE accepted list: whatever reads this
+          // later — the mistake log, a learning gap, an admin's answer tool —
+          // must not be told that the one word listed first is the only one.
+          items.push({ label: [pOf(block), 'Blank ' + (start + i)].filter(Boolean).join(' '), model: coAlts(raw).join(' / '), block, field: 'text' });
+          return oidx;
+        });
+        coBlocks.push({ blockId: block.id, oidxs, answers, startNum: start });
+        addAnswer(coStudentHtml(block, containerSel, oidxs));
+        break;
+      }
       case 'explanation':
       case 'widget':
         break; // hidden until the student has answered (see showExplanation)
@@ -19764,7 +19861,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   // A cloze is answered by dragging, never by writing on paper, so its blanks
   // count with the fill-in-the-blank ones: both keep the "photo of your written
   // work" bar away from a question that has nothing to photograph.
-  const fbItemCount = fbBlocks.concat(cbBlocks).reduce((s, b) => s + b.oidxs.length, 0);
+  const fbItemCount = fbBlocks.concat(cbBlocks, coBlocks).reduce((s, b) => s + b.oidxs.length, 0);
   if (annotCount) {
     // Each annotation pad carries its own Check / AI Check bar; just add the
     // how-to hint once at the end instead of the photo bar / "nothing" note.
@@ -19781,6 +19878,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   _openMcqStore[containerSel] = mcqItems;
   _fbStore[containerSel] = fbBlocks;
   _cbStore[containerSel] = cbBlocks;
+  _coStore[containerSel] = coBlocks;
   _openQStore[containerSel] = q;
   _openSurfaceCfg[containerSel] = markCfg || {};
   _openPartResults[containerSel] = {};
@@ -20930,6 +21028,375 @@ function cbAnswerKeyText(block) {
 }
 
 // =====================================================================
+// 📝 COMPREHENSION CLOZE (open) — one passage, numbered blanks, NO word bank
+// =====================================================================
+// The third cloze and the hardest one: fifteen numbered blanks in a passage and
+// nothing to choose from. The student reads the whole passage, types a word into
+// each blank, and submits the lot in one go.
+//
+// It is `clozebank`'s opposite and `fillblank`'s bigger sibling, and what
+// separates all three is what "correct" is allowed to mean:
+//
+//  • `clozebank` gives a closed list, so the mark is exact, instant and free.
+//  • `fillblank` marks one word against ONE expected answer, by meaning.
+//  • Here there is no list and there is rarely one right word. "Dishes like
+//    chicken rice ______ people from all backgrounds together" takes bring,
+//    draw, pull, tie — every one of them correct. A blank marked against a
+//    single stored word fails most of a class for being right differently.
+//
+// Four things hold it together:
+//
+//  • **A blank stores EVERY answer it accepts**, inside the same [[markup]],
+//    pipe-separated: `[[bring|draw|pull]]`. One field, one parser, and no nested
+//    array for Firestore to reject. The first is the primary — what the key
+//    leads with — and `coAlts` is the ONE place that string becomes a list.
+//  • **Anything on that list is marked correct RIGHT HERE**, with no AI call: no
+//    latency, no cost, and no chance of a model talking itself out of a word the
+//    teacher already accepted.
+//  • **Everything else goes to the AI in ONE call, carrying the whole passage.**
+//    The passage is what decides whether a word fits, so a blank sent on its own
+//    cannot be marked fairly — and the prompt says in as many words that the
+//    stored list is NOT exhaustive, or the model just re-checks it and the
+//    feature is `fillblank` again.
+//  • **The whole passage is submitted at once**, because that is the question
+//    the paper asks. Fifteen blanks behind fifteen Check buttons is a different
+//    exercise, and it leaks the answers one blank at a time.
+const CO_START_DEFAULT = 46;    // where this section usually starts on the paper
+const CO_ALT_SEP = '|';
+const CO_MAX_BLANKS = 60;
+const _coStore = {};            // containerSel -> [{ blockId, oidxs, answers, startNum }]
+
+function coIsCloze(b) { return !!b && b.type === 'clozeopen'; }
+// Punctuation and case are not what a cloze tests, so they are normalised away —
+// but the apostrophe and the hyphen stay, because "well-known" and "wellknown"
+// are not the same word and neither are "its" and "it's".
+function _coNorm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9\s'-]/g, '').replace(/\s+/g, ' ').trim(); }
+// The ONE place `bring|draw|pull` becomes a list. Best answer first, duplicates
+// collapsed, blanks dropped — so `[[bring|]]` and `[[bring|Bring]]` are one
+// answer, not a list with a hole in it.
+function coAlts(raw) {
+  const seen = new Set(), out = [];
+  String(raw == null ? '' : raw).split(CO_ALT_SEP).forEach(w => {
+    const t = String(w).replace(/\s+/g, ' ').trim();
+    if (!t || seen.has(_coNorm(t))) return;
+    seen.add(_coNorm(t));
+    out.push(t);
+  });
+  return out;
+}
+function coBest(raw) { return coAlts(raw)[0] || ''; }
+function _coBlanks(block) { return _fbParse(block && block.text).filter(p => p.type === 'blank').map(p => p.answer || '').slice(0, CO_MAX_BLANKS); }
+function coHasBlanks(block) { return coIsCloze(block) && _coBlanks(block).length > 0; }
+function _coStart(block) {
+  const n = parseInt(block && block.startNum, 10);
+  return (isFinite(n) && n >= 1 && n <= 999) ? n : CO_START_DEFAULT;
+}
+// Is this word one the blank already accepts? Answered without the AI, so the
+// teacher's own list is never overruled by a model.
+function coAccepts(raw, word) {
+  const w = _coNorm(word);
+  return !!w && coAlts(raw).some(a => _coNorm(a) === w);
+}
+// The instruction line, generated from what the passage actually holds so it can
+// never drift from it. An author who types their own keeps theirs.
+function coIntro(block) {
+  const own = String((block && block.intro) || '').trim();
+  if (own) return own;
+  const n = _coBlanks(block).length;
+  if (!n) return '';
+  const a = _coStart(block), b = a + n - 1;
+  return `There ${n === 1 ? 'is' : 'are'} ${n} blank${n === 1 ? '' : 's'}, numbered ${a}${n === 1 ? '' : ' to ' + b}, in the passage below. Fill in each blank with a suitable word.`;
+}
+
+// The passage's own wording, escaped, with its paragraphs kept. A run of blank
+// lines collapses to ONE: the passage is set at line-height 3.1 so the numbers
+// have somewhere to sit, which turns two <br>s into six lines of nothing.
+function _coText(t) { return escapeHtmlKeepLines(String(t == null ? '' : t).replace(/\n{2,}/g, '\n')); }
+
+// ---- the student's passage --------------------------------------------------
+// EVERY blank is the same width, and that is not a shortcut — it is the point.
+// `fillblank` sizes each box from its own answer, which is fine when the answer
+// is already half given away by the sentence; here the student has to think of
+// the word, and a box visibly wider than its neighbours says "this one is
+// long". The paper prints one rule width for the whole passage, so the width is
+// taken from the LONGEST answer anywhere in it: uniform, and still big enough
+// for every one of them.
+function _coSlotWidth(block) {
+  const longest = _coBlanks(block).reduce((m, raw) => coAlts(raw).reduce((n, a) => Math.max(n, a.length), m), 5);
+  return Math.max(10, Math.min(24, longest + 4));
+}
+// The number sits UNDER the rule, as the paper prints it — positioned, not
+// flowed, or every sentence carrying a blank gains a gap through its middle.
+function _coSlotHtml(oidx, num, w) {
+  return `<span class="co-slot" data-co-slot="${oidx}"><input class="co-input" type="text" data-oidx="${oidx}"
+      autocomplete="off" autocapitalize="off" spellcheck="false" style="width:${w}ch;"
+      aria-label="Blank ${num}"><span class="co-num">(${num})</span></span>`;
+}
+function coStudentHtml(block, containerSel, oidxs) {
+  const parts = _fbParse(block.text || '');
+  const start = _coStart(block);
+  const w = _coSlotWidth(block);
+  let k = 0;
+  // escapeHtmlKeepLines, not escapeHtml: this is a PASSAGE, and a cloze passage
+  // runs to three or four paragraphs. Flattened into one block of prose it is
+  // measurably harder to read, which is the one thing the exercise tests.
+  const body = parts.map(p => {
+    if (p.type !== 'blank') return _coText(p.text);
+    const i = k++;
+    return i < oidxs.length ? _coSlotHtml(oidxs[i], start + i, w) : '';
+  }).join('');
+  const intro = coIntro(block);
+  const n = oidxs.length;
+  return `<div class="co-wrap" data-co-wrap="${escapeHtml(block.id)}">
+      ${intro ? `<div class="co-intro">${escapeHtml(intro)}</div>` : ''}
+      <div class="co-passage">${body}</div>
+      <div class="co-actions">
+        <button type="button" class="btn btn-check" data-co-check="${containerSel}" data-co-blk="${escapeHtml(block.id)}">✓ Check all ${n} answer${n === 1 ? '' : 's'}</button>
+        <button type="button" class="btn btn-ghost" data-co-clear="${containerSel}" data-co-blk="${escapeHtml(block.id)}">↺ Clear all</button>
+        <span class="co-hint">Fill in every blank, then check them all at once. More than one word can be right.</span>
+      </div>
+      <div class="co-feedback" data-co-fb="${escapeHtml(block.id)}"></div>
+    </div>`;
+}
+// The passage as the MARKER has to see it: the words the student did not have to
+// supply, and a numbered gap where each one they did. A cloze word is right or
+// wrong because of the sentence around it, so a blank sent on its own — which is
+// all `fillblank` ever sends — cannot be judged.
+function coMarkPassage(block, rows) {
+  let k = 0;
+  return _fbParse(block && block.text)
+    .map(p => p.type === 'blank' ? ' ___(' + (rows[k] ? rows[k++].num : ++k) + ')___ ' : p.text)
+    .join('').replace(/\s+/g, ' ').trim();
+}
+
+// ---- marking: the list first, then the passage --------------------------------
+function coClearAll(containerSel, blockId) {
+  const c = document.querySelector(containerSel); if (!c) return;
+  const wrap = c.querySelector('[data-co-wrap="' + blockId + '"]'); if (!wrap) return;
+  _coResetWrap(wrap);
+}
+function _coResetWrap(wrap) {
+  if (!wrap) return;
+  wrap.querySelectorAll('.co-input').forEach(el => { el.value = ''; el.disabled = false; });
+  wrap.querySelectorAll('.co-slot').forEach(s => s.classList.remove('right', 'wrong', 'near'));
+  const fb = wrap.querySelector('[data-co-fb]'); if (fb) fb.innerHTML = '';
+}
+async function coCheck(containerSel, blockId, btn) {
+  const c = document.querySelector(containerSel); if (!c) return;
+  const store = (_coStore[containerSel] || []).find(x => x.blockId === blockId); if (!store) return;
+  const wrap = c.querySelector('[data-co-wrap="' + blockId + '"]'); if (!wrap) return;
+  const q = _openQStore[containerSel];
+  const block = ((q && q.blocks) || []).find(b => b && b.id === blockId);
+  const fb = wrap.querySelector('[data-co-fb="' + blockId + '"]');
+  const rows = store.oidxs.map((oidx, i) => {
+    const el = wrap.querySelector('.co-input[data-oidx="' + oidx + '"]');
+    return { oidx, i, el, num: store.startNum + i, raw: store.answers[i] || '', student: el ? el.value.trim() : '' };
+  });
+  if (rows.every(r => !r.student)) { showToast('Fill in at least one blank first', 'info'); return; }
+
+  // The teacher's own list is honoured HERE, before any model sees it: free,
+  // instant, and impossible for the AI to overrule.
+  const pending = [];
+  rows.forEach(r => {
+    if (!r.student) { r.verdict = 'incorrect'; return; }
+    if (coAccepts(r.raw, r.student)) { r.verdict = 'correct'; return; }
+    pending.push(r);
+  });
+
+  if (pending.length && window.__aiReady && window.__aiReady()) {
+    const orig = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = 'Checking…'; }
+    if (fb) fb.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">🤖 Checking your answers…</span>';
+    try {
+      const passage = coMarkPassage(block, rows);
+      const list = pending.map(r => `${r.num}. accepted=[${coAlts(r.raw).map(a => '"' + a + '"').join(', ')}] student="${r.student}"`).join('\n');
+      const prompt =
+        `You are marking a comprehension cloze for a Singapore primary-school English student. ` +
+        `${_markingPreamble(q && q.markingGuide, q && q.topic)}\n` +
+        `Here is the whole passage, with each blank shown as ___(46)___ and so on:\n"${passage}"\n\n` +
+        `For EACH blank listed below, decide whether the student's word is acceptable IN THAT BLANK, in THIS passage.\n` +
+        `IMPORTANT: the "accepted" list is a GUIDE, not the complete set of right answers. A cloze blank usually has several correct words, and the student's word is very often one the list does not mention. ` +
+        `Mark "correct" whenever the student's word (1) fits the meaning of that sentence and of the passage as a whole, AND (2) is grammatically right in that position — the right part of speech, tense, number and form. ` +
+        `Accept a word that is nowhere on the list whenever it genuinely satisfies both, and accept a clear spelling slip of a word that would be correct. ` +
+        `Mark "incorrect" only when the word changes or breaks the meaning, is the wrong part of speech, or is the wrong form (for example "bring" where the sentence needs "brings").\n` +
+        `Give a "why" of at most 12 words for each, addressed to the student.\n` +
+        `Return ONLY JSON: {"items":[{"n":46,"verdict":"correct","why":"..."}]}\n${list}`;
+      const raw = await askGemini(prompt, { maxOutputTokens: 400 + pending.length * 60, temperature: 0.1, json: true });
+      const parsed = _parseAIJson(raw);
+      const arr = Array.isArray(parsed) ? parsed : ((parsed && parsed.items) || []);
+      const byNum = {};
+      pending.forEach(r => { byNum[r.num] = r; });
+      arr.forEach(v => {
+        const r = v && byNum[Number(v.n)];
+        if (!r) return;
+        r.verdict = String(v.verdict || '').toLowerCase() === 'correct' ? 'correct' : 'incorrect';
+        r.why = String(v.why || '').trim();
+      });
+    } catch (e) { console.warn('open cloze AI mark', e); }
+    if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+  }
+
+  let correct = 0;
+  const wrong = [];
+  rows.forEach(r => {
+    if (!r.verdict) r.verdict = 'incorrect';
+    const ok = r.verdict === 'correct';
+    if (ok) correct++; else wrong.push(r);
+    if (r.el) { r.el.disabled = true; }
+    const slot = r.el && r.el.closest('.co-slot');
+    if (slot) { slot.classList.toggle('right', ok); slot.classList.toggle('wrong', !ok); }
+    // The full accepted list is what goes on the record, not just the first one:
+    // the mistake log and the learning-gap note both read this, and "you wrote
+    // 'draw', the answer was 'bring'" is a lie when draw was also fine.
+    _setPartResult(containerSel, 'open:' + r.oidx, r.verdict, ok ? 1 : 0, coAlts(r.raw).join(' / '), r.student);
+  });
+  if (fb) {
+    fb.innerHTML = `<span style="font-weight:700;color:${correct === rows.length ? 'var(--primary)' : 'var(--accent-orange)'};">${correct} / ${rows.length} correct</span>`
+      + (wrong.length
+        ? `<div class="co-fb-list">${wrong.map(r => {
+            const alts = coAlts(r.raw);
+            return `<span><b>${r.num}.</b> ${escapeHtml(alts[0] || '—')}${alts.length > 1 ? `<span class="co-fb-alt"> or ${escapeHtml(alts.slice(1).join(', '))}</span>` : ''}${r.why ? `<span class="co-fb-why"> — ${escapeHtml(r.why)}</span>` : ''}</span>`;
+          }).join('')}</div>`
+        : ' 🎉');
+  }
+  _checkAllPartsMarked(containerSel);
+}
+// One delegated listener set, for the reason the word-bank cloze has one: the
+// passage is re-rendered by every practice surface.
+document.addEventListener('click', function (e) {
+  const chk = e.target.closest && e.target.closest('[data-co-check]');
+  if (chk) { e.preventDefault(); coCheck(chk.getAttribute('data-co-check'), chk.getAttribute('data-co-blk'), chk); return; }
+  const clr = e.target.closest && e.target.closest('[data-co-clear]');
+  if (clr) { e.preventDefault(); coClearAll(clr.getAttribute('data-co-clear'), clr.getAttribute('data-co-blk')); }
+});
+// Enter moves to the next blank rather than submitting: fifteen blanks is a lot
+// of reaching for the mouse.
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Enter' || !e.target.classList || !e.target.classList.contains('co-input')) return;
+  e.preventDefault();
+  const wrap = e.target.closest('.co-wrap'); if (!wrap) return;
+  const all = Array.from(wrap.querySelectorAll('.co-input')).filter(x => !x.disabled);
+  const next = all[all.indexOf(e.target) + 1];
+  if (next) { next.focus(); next.select(); }
+});
+
+// ---- on PAPER ---------------------------------------------------------------
+// Its own case in both print builders, for `fillblank`'s reason: the read-only
+// rendering shows every answer in its blank, which on a worksheet is the whole
+// exercise given away. Shares the word-bank cloze's printed slot, because the
+// paper prints the two identically once the bank is gone.
+function coPrintHtml(block) {
+  const parts = _fbParse(block && block.text);
+  if (!parts.length) return '';
+  const start = _coStart(block);
+  let k = 0;
+  const body = parts.map(p => p.type === 'blank'
+    ? `<span class="print-cb-slot"><span class="print-cb-rule">&nbsp;</span><span class="print-cb-num">(${start + (k++)})</span></span>`
+    : _coText(p.text)).join('');
+  const intro = coIntro(block);
+  return (intro ? `<div class="print-cb-intro">${escapeHtml(intro)}</div>` : '')
+    + `<div class="print-text-block print-cb-passage">${body}</div>`;
+}
+// Every blank on the key, with the alternatives spelled out — a teacher marking
+// by hand needs to know that "draw" earns the mark as surely as "bring" does.
+function coAnswerKeyText(block) {
+  const start = _coStart(block);
+  const rows = _coBlanks(block).map((raw, i) => {
+    const alts = coAlts(raw);
+    return `${start + i}. ${alts[0] || '—'}${alts.length > 1 ? ' (or ' + alts.slice(1).join(', ') + ')' : ''}`;
+  });
+  return rows.length ? rows.join('   ') : '';
+}
+
+// ---- the editor -------------------------------------------------------------
+// The READ-ONLY twin of the student rendering, with the answers in their slots,
+// so the author is looking at the page the class will get rather than at markup.
+function _coEditorPreviewHtml(block) {
+  const parts = _fbParse(block && block.text);
+  if (!parts.length) return '<span style="color:var(--text-muted);font-size:0.82rem;">Paste a passage above and blank a few words.</span>';
+  const start = _coStart(block);
+  let k = 0;
+  const body = parts.map(p => {
+    if (p.type !== 'blank') return _coText(p.text);
+    const alts = coAlts(p.answer);
+    const n = start + (k++);
+    return `<span class="co-slot static"><span class="co-fill">${escapeHtml(alts[0] || '?')}` +
+      `${alts.length > 1 ? `<span class="co-alt" title="${escapeHtml(alts.slice(1).join(', '))}">+${alts.length - 1}</span>` : ''}` +
+      `</span><span class="co-num">(${n})</span></span>`;
+  }).join('');
+  const intro = coIntro(block);
+  return (intro ? `<div class="co-intro">${escapeHtml(intro)}</div>` : '') + `<div class="co-passage">${body}</div>`;
+}
+function coSyncEditor(id) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  const c = document.getElementById('coChips_' + id); if (c) c.innerHTML = _fbChipsHtml(id, b.text || '', 'coToggleToken');
+  const p = document.getElementById('coPrev_' + id); if (p) p.innerHTML = _coEditorPreviewHtml(b);
+  const s = document.getElementById('coCount_' + id);
+  if (s) {
+    const n = _coBlanks(b).length, a = _coStart(b);
+    s.textContent = n ? `${n} blank${n === 1 ? '' : 's'} (${a}–${a + n - 1})` : 'no blanks yet';
+  }
+}
+// `fbToggleToken` edits blocks[i].text and writes back into fbText_<id>, so this
+// cloze needs the same round trip against its own textarea and preview.
+function coToggleToken(id, idx) {
+  fbToggleToken(id, idx);
+  const ta = document.getElementById('coText_' + id);
+  const b = blocks.find(x => x.id === id);
+  if (ta && b) ta.value = b.text || '';
+  coSyncEditor(id);
+}
+// Widen every blank to the other words that would also earn the mark. Authoring
+// a cloze by hand otherwise produces one accepted word per blank, which is the
+// single thing this block type exists to avoid.
+async function coAiAlternatives(id, btn) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  const blanks = _coBlanks(b);
+  if (!blanks.length) { showToast('Blank a few words first', 'info'); return; }
+  if (!window.__aiReady || !window.__aiReady()) { showToast("AI isn't set up yet", 'info'); return; }
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Thinking…'; }
+  try {
+    const start = _coStart(b);
+    let k = 0;
+    const passage = _fbParse(b.text).map(p => p.type === 'blank' ? ' ___(' + (start + k++) + ')___ ' : p.text).join('').replace(/\s+/g, ' ').trim();
+    const list = blanks.map((raw, i) => `${start + i}. current=[${coAlts(raw).map(a => '"' + a + '"').join(', ')}]`).join('\n');
+    const prompt =
+      `You are a Singapore primary-school English teacher writing the marking scheme for a comprehension cloze.\n\n` +
+      `PASSAGE (each blank shown as ___(46)___):\n"${passage}"\n\n` +
+      `For EACH blank below, list EVERY word that a marker should accept there — the words already listed plus any others that fit the meaning of the passage and are grammatically correct in that exact position (right part of speech, tense, number and form). ` +
+      `Keep the current best answer FIRST. Add between 1 and 4 genuine alternatives; add none rather than a word that does not really work. Single words only, in the exact form the blank needs.\n` +
+      `Return ONLY JSON: {"items":[{"n":${start},"answers":["bring","draw","pull"]}]}\n${list}`;
+    const parsed = _parseAIJson(await askGemini(prompt, { maxOutputTokens: 300 + blanks.length * 60, temperature: 0.2, json: true }));
+    const arr = Array.isArray(parsed) ? parsed : ((parsed && parsed.items) || []);
+    const byNum = {};
+    arr.forEach(v => { if (v && Array.isArray(v.answers)) byNum[Number(v.n)] = v.answers.map(String); });
+    let touched = 0, i = 0;
+    // Rewritten through _fbParse, so nothing but the answers inside [[ ]] moves.
+    b.text = _fbParse(b.text).map(p => {
+      if (p.type !== 'blank') return p.text;
+      const n = start + (i++);
+      const got = coAlts((byNum[n] || []).join(CO_ALT_SEP));
+      const now = coAlts(p.answer);
+      // The author's own first answer stays first, and a reply that dropped it
+      // altogether is merged rather than obeyed — never fewer answers than
+      // before, or the button quietly narrows the marking scheme it was asked
+      // to widen.
+      const merged = coAlts(now.concat(got).join(CO_ALT_SEP));
+      if (merged.length > now.length) touched++;
+      return '[[' + merged.join(CO_ALT_SEP) + ']]';
+    }).join('');
+    const ta = document.getElementById('coText_' + id); if (ta) ta.value = b.text;
+    coSyncEditor(id);
+    showToast(touched ? `Added alternatives to ${touched} blank${touched === 1 ? '' : 's'}` : 'No new alternatives to add', touched ? 'success' : 'info');
+  } catch (e) {
+    console.error('cloze alternatives', e);
+    showToast('AI error: ' + (e && e.message ? e.message : e), 'error');
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+}
+
+// =====================================================================
 // ✍️ SYNTHESIS & TRANSFORMATION — rewrite the sentence(s) using the word given
 // =====================================================================
 // The last section of the paper: one or two sentences, a word or phrase the
@@ -21402,6 +21869,9 @@ function resetOpenAnswersIn(containerSel, scoreElId) {
     _cbSyncBank(w);
     const fb = w.querySelector('[data-cb-fb]'); if (fb) fb.innerHTML = '';
   });
+  // The open cloze locks every blank once it is marked, so a reset that only
+  // emptied them would leave a passage that cannot be answered a second time.
+  document.querySelectorAll(containerSel + ' [data-co-wrap]').forEach(_coResetWrap);
   const c = document.querySelector(containerSel);
   if (c) c.querySelectorAll('.post-explanation').forEach(el => el.remove());
   // Wipe any diagram annotations (strokes + text labels + feedback) too.
@@ -23652,6 +24122,18 @@ function buildWorksheetHtml(selected, worksheetTitle, opts) {
             }
             break;
           }
+          // Its own case for `fillblank`'s reason, one step worse: the read-only
+          // rendering prints every answer inside its blank, so a cloze worksheet
+          // would come off the printer already filled in.
+          case 'clozeopen': {
+            if (coHasBlanks(block)) {
+              qHtml += coPrintHtml(block);
+              _pushAnswerKeySection(qSections, 'Comprehension cloze', coAnswerKeyText(block), bPart);
+            } else {
+              qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
+            }
+            break;
+          }
           default: {
             // A non-text block that OPENS a part prints its label too. An MCQ can
             // open one (see QPART_OPENER_TYPES), and without this the paper shows
@@ -24370,6 +24852,8 @@ function _wsQeBlockSummary(b) {
     case 'synthesis': return 'Rewrite the sentence' + (syCue(b) ? ' using "' + syCue(b) + '"' : '') + ' · ' + syMarks(b) + ' marks';
     case 'clozebank': return _cbBlanks(b).length + ' numbered blank' + (_cbBlanks(b).length === 1 ? '' : 's') + ' · '
       + cbBank(b).length + '-word bank';
+    case 'clozeopen': return _coBlanks(b).length + ' numbered blank' + (_coBlanks(b).length === 1 ? '' : 's') + ' · no word bank'
+      + ' · ' + _coBlanks(b).reduce((n, r) => n + coAlts(r).length, 0) + ' accepted answers';
     case 'explanation': return 'Explanation (answer key)';
     case 'widget': return 'Interactive widget (screen-only, not printed)';
     case 'answerKey': return 'Answer key';
@@ -29196,6 +29680,7 @@ function _docQParts(q) {
     else if (b.type === 'fillblank') { const fp = _fbParse(b.text || ''); p.text += ' ' + fp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = fp.filter(x => x.type === 'blank').map(x => x.answer).join('; '); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
     else if (b.type === 'synthesis') { p.text += ' ' + syGiven(b) + (syCue(b) ? ' [' + syCue(b) + ']' : ''); if (syAnswer(b)) p.answers.push({ kind: 'plain', text: syAnswer(b) }); }
     else if (b.type === 'clozebank') { const cp = _fbParse(b.text || ''); p.text += ' ' + cp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = cbAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
+    else if (b.type === 'clozeopen') { const op = _fbParse(b.text || ''); p.text += ' ' + op.map(x => x.type === 'blank' ? coBest(x.answer) : x.text).join(''); const ans = coAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
     else if (b.type === 'explanation') scanInline(b.content);
   });
   p.text = p.text.replace(/\s+/g, ' ').trim();
@@ -29730,6 +30215,10 @@ function _cqRepr(q) {
         lines.push('Comprehension cloze, blanks numbered from ' + _cbStart(b) + '. Word bank: '
           + cbBank(b).map((w, i) => '(' + CB_LETTERS[i] + ') ' + w).join(', ')
           + '\nPassage with the answers shown in [[brackets]]: ' + stripHtml(b.text || ''));
+        break;
+      case 'clozeopen':
+        lines.push('Comprehension cloze (no word bank), blanks numbered from ' + _coStart(b) + '.'
+          + '\nPassage with every accepted answer shown in [[brackets]], alternatives separated by |: ' + stripHtml(b.text || ''));
         break;
       case 'explanation': lines.push('Explanation given to the student: ' + stripHtml(b.content || '')); break;
       default: break;
@@ -33320,7 +33809,7 @@ function ppStyles(){
      so the card shows the question and its answer spaces, nothing else. */
   .pp-pe-preview { border:1px solid var(--border); border-radius:12px; padding:18px 20px; background:var(--surface-alt,#fafbfa); }
   .pp-pe-preview .qp-part { background:var(--surface,#fff); }
-  .pp-pe-preview .open-answer, .pp-pe-preview .sy-line, .pp-pe-preview .fb-input, .pp-pe-preview input[type=radio] { pointer-events:none; }
+  .pp-pe-preview .open-answer, .pp-pe-preview .sy-line, .pp-pe-preview .fb-input, .pp-pe-preview .co-input, .pp-pe-preview input[type=radio] { pointer-events:none; }
   .pp-pe-preview .part-actions, .pp-pe-preview .part-hint-box, .pp-pe-preview .mcq-feedback,
   .pp-pe-preview .open-feedback, .pp-pe-preview .admin-ans-tool, .pp-pe-preview .mic-btn,
   .pp-pe-preview .fb-actions, .pp-pe-preview .open-photo-bar,
@@ -36557,6 +37046,9 @@ window.saveBlockFlag = saveBlockFlag;
 window.cbSyncEditor = cbSyncEditor;
 window.cbSetExtras = cbSetExtras;
 window.cbToggleToken = cbToggleToken;
+window.coSyncEditor = coSyncEditor;
+window.coToggleToken = coToggleToken;
+window.coAiAlternatives = coAiAlternatives;
 window.sySyncEditor = sySyncEditor;
 window.syAiAnswer = syAiAnswer;
 window.syLineKey = syLineKey;

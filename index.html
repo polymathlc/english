@@ -168,7 +168,39 @@
   .cb-ed-check input { appearance:auto; -webkit-appearance:auto; width:15px; height:15px; flex:0 0 auto; cursor:pointer; }
   .cb-ed-warn { font-size:0.8rem; color:#7a5410; background:#fdf4e3; border:1px solid #e0b768; border-radius:8px; padding:8px 12px; margin-bottom:10px; line-height:1.6; }
   .cb-ed-prev { border:1px solid var(--border); border-radius:12px; padding:18px 20px 26px; background:var(--surface-alt,#fafbfa); }
-  .cb-ed-prev .cb-passage { line-height:2.8; }
+  .cb-ed-prev .cb-passage, .cb-ed-prev .co-passage { line-height:2.8; }
+
+/* ---- 📝 Comprehension cloze, open — numbered blanks, NO word bank ----------
+   The same passage furniture as the word-bank cloze (it is the same page once
+   the bank is gone), but the blank is something to TYPE in rather than a drop
+   target: an input sitting ON the rule, with its number underneath as the paper
+   prints it. Sized per blank from the longest answer it accepts. */
+  .co-intro { font-size:0.9rem; line-height:1.7; margin-bottom:18px; }
+  .co-passage { font-size:0.96rem; line-height:3.1; text-align:justify; }
+  .co-slot { position:relative; display:inline-block; margin:0 3px; vertical-align:baseline; }
+  .co-input {
+    appearance:none; -webkit-appearance:none;
+    border:0; border-bottom:1.5px solid var(--rule,#aeb4b0); border-radius:0;
+    background:transparent; color:var(--text); text-align:center;
+    font-family:inherit; font-size:0.94rem; line-height:1.5;
+    padding:1px 4px 3px; outline:none; transition:border-color .12s ease, background .12s ease;
+  }
+  .co-input:hover:not(:disabled) { border-bottom-color:var(--text-muted); cursor:text; }
+  .co-input:focus { border-bottom-width:2px; border-bottom-color:var(--primary,#0b6b4f); padding-bottom:2px; }
+  .co-input:disabled { color:var(--text); opacity:1; }
+  .co-num { position:absolute; left:0; right:0; top:100%; font-size:0.76rem; font-weight:700; line-height:1.5; color:var(--text-muted); pointer-events:none; text-align:center; }
+  .co-slot.right .co-input { border-bottom-color:#16a34a; background:#dcfce7; }
+  .co-slot.wrong .co-input { border-bottom-color:#dc2626; background:#fee2e2; }
+  /* The editor preview: the answer sitting in its own blank, with a count of
+     the other words that also earn the mark. */
+  .co-slot.static .co-fill { display:inline-block; min-width:70px; padding:0 6px; border-bottom:1.5px solid var(--rule,#aeb4b0); font-size:0.92rem; color:var(--primary,#0b6b4f); text-align:center; }
+  .co-alt { font-size:0.72rem; font-weight:700; color:var(--text-muted); margin-left:5px; vertical-align:super; cursor:help; }
+  .co-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:26px 0 4px; }
+  .co-hint { font-size:0.8rem; color:var(--text-muted); line-height:1.6; }
+  .co-feedback { margin:6px 0 4px; }
+  .co-fb-list { display:flex; flex-direction:column; gap:5px; margin-top:9px; font-size:0.85rem; color:var(--text); line-height:1.6; }
+  .co-fb-alt { color:var(--text-muted); }
+  .co-fb-why { color:var(--text-muted); font-style:italic; }
 /* ---- ✍️ Synthesis & transformation — rewrite using the word given ---------
    One box, because the AI marks the sentence as a whole. When the paper GIVES
    the opening it is printed beside the box rather than typed into it, and
@@ -6687,6 +6719,10 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
             <button class="add-block-btn plainanswer-add" onclick="addBlock('clozebank')" title="One passage with numbered blanks and a lettered word bank above it. Students drag a word into each blank and it is struck off the list.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
               &#x1F524; Add Comprehension Cloze
+            </button>
+            <button class="add-block-btn plainanswer-add" onclick="addBlock('clozeopen')" title="One passage with numbered blanks and NO word bank. Students type a word into every blank and submit them all at once; the AI marks each blank against the passage, and more than one word can be right.">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              &#x1F4DD; Add Cloze (no word bank)
             </button>
             <button class="add-block-btn plainanswer-add" onclick="addBlock('synthesis')" title="Synthesis &amp; transformation: one or two sentences, a word the student must use, and one rewritten sentence meaning the same thing. The AI marks the sentence as a whole.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
