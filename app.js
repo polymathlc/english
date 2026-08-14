@@ -90,6 +90,14 @@ const NOTES_COL     = 'teachingNotesEn';    // users/{uid}/teachingNotesEn
 const STATS_COL     = 'statsEn';            // users/{uid}/statsEn
 const WORKSHEETS_COL     = 'worksheetsEn';  // users/{uid}/worksheetsEn
 const USER_WORKSESSION_COL = 'workSessionsEn';
+// These three predate the naming convention and are shared with no one, so they
+// keep their plain names. They are here — rather than spelled inline where they
+// are used — because a collection the rules do not name FAILS CLOSED, and the
+// only way to keep firestore.rules honest is to be able to read the whole list
+// of collections in one place.
+const MISTAKES_COL   = 'mistakes';            // users/{uid}/mistakes
+const FLASHCARDS_COL = 'flashcards';          // users/{uid}/flashcards
+const SCHEDULED_COL  = 'scheduledQuestions';  // users/{uid}/scheduledQuestions
 // Top-level (shared across accounts, so the teacher can read the class).
 const PROFILES_COL  = 'enUserProfiles';
 const CONFIG_COL    = 'enConfig';
@@ -1688,6 +1696,14 @@ async function enterApp(user) {
     if (document.querySelector('#page-home.active')) renderHomePage();
   }).catch(e => console.warn('progress init', e));
 
+  // What this student does not yet understand, and the day's regenerate
+  // credits. Loaded before any marking can happen, because lgNoteFromParts
+  // writes nothing while lgState is still null.
+  lgInit().then(() => {
+    try { lgPaintCredits(); } catch (_) {}
+    if (document.querySelector('#page-gaps.active')) renderGapsPage();
+  }).catch(e => console.warn('learning gaps init', e));
+
   // Load message inbox so the unread badge shows on the Messages nav item.
   loadMessages().then(updateMsgBadge).catch(e => console.warn('messages init', e));
 
@@ -1713,7 +1729,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.0.0';
+const APP_VERSION = 'v1.1.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -2071,6 +2087,9 @@ onAuthStateChanged(auth, (user) => {
   } else {
     currentUser = null;
     progressOnSignOut();
+    // A gap list is one child's — a sibling signing in on the same device must
+    // never be shown it, nor spend what is left of their credits.
+    lgOnSignOut();
     students = [];
     studentSetupSeen = false;
     // A revision deck and a mistake log belong to one account — never let a
@@ -3037,6 +3056,7 @@ function navigateTo(page) {
   if (page === 'usage') loadUsageDashboard();
   if (page === 'myreport') loadMyReport();
   if (page === 'flashcards') renderFlashcardsPage();
+  if (page === 'gaps') renderGapsPage();
   if (page === 'familysettings') famRenderSettings();
   if (page === 'scheduled') loadScheduledQuestions();
   if (page === 'flagged') loadFlaggedQuestions();
@@ -17525,26 +17545,16 @@ function populateTopicFilter() {
   // A ticked topic whose last question was deleted or retagged stops existing.
   Array.from(bankTopicSel).forEach(t => { if (!counts.has(t)) bankTopicSel.delete(t); });
 
-  const byLevel = { P3: [], P4: [], P5: [], P6: [] };
-  Array.from(counts.keys()).sort((a, b) => a.localeCompare(b))
-    .forEach(t => { const lv = getTopicLevel(t); (byLevel[lv] || byLevel.P6).push(t); });
-
+  // One flat, alphabetical list. The P3-P6 headings that used to bracket this
+  // list are gone: an English topic is not owned by a year the way a Science
+  // one is — "Grammar" is P3 to P6 — so filing them under a year said something
+  // untrue and cost a row of chrome per group.
   let html = '';
-  TOPIC_LEVELS.forEach(lv => {
-    const topics = byLevel[lv];
-    if (!topics.length) return;
-    html += `<div class="ms-level" data-level="${lv}">
-      <div class="ms-group" onclick="toggleBankTopicLevel('${lv}', event)">
-        <span>Primary ${lv.slice(1)}</span>
-        <input type="checkbox" onclick="toggleBankTopicLevel('${lv}', event)" aria-label="All ${lv} topics">
-      </div>`;
-    topics.forEach(t => {
-      html += `<label class="ms-item">
-        <span>${escapeHtml(t)} <span class="ms-item-n">${counts.get(t)}</span></span>
-        <input type="checkbox" value="${escapeHtml(t)}" onchange="toggleBankTopic(this.value, this.checked)">
-      </label>`;
-    });
-    html += `</div>`;
+  Array.from(counts.keys()).sort((a, b) => a.localeCompare(b)).forEach(t => {
+    html += `<label class="ms-item">
+      <span>${escapeHtml(t)} <span class="ms-item-n">${counts.get(t)}</span></span>
+      <input type="checkbox" value="${escapeHtml(t)}" onchange="toggleBankTopic(this.value, this.checked)">
+    </label>`;
   });
   // Rebuilding drops the reader's place in a long list, so keep the scroll.
   const scroll = list.scrollTop;
@@ -17566,14 +17576,6 @@ function _syncBankTopicTicks() {
       cb.checked = on;
       item.classList.toggle('on', on);
     });
-    list.querySelectorAll('.ms-level').forEach(level => {
-      const head = level.querySelector(':scope > .ms-group input[type="checkbox"]');
-      if (!head) return;
-      const boxes = Array.from(level.querySelectorAll('.ms-item input[type="checkbox"]'));
-      const on = boxes.filter(c => c.checked).length;
-      head.checked = boxes.length > 0 && on === boxes.length;
-      head.indeterminate = on > 0 && on < boxes.length;   // half a year ticked reads as neither
-    });
   }
   _syncBankTopicChrome();
 }
@@ -17591,21 +17593,6 @@ function _syncBankTopicChrome() {
 
 function toggleBankTopic(topic, on) {
   if (on) bankTopicSel.add(topic); else bankTopicSel.delete(topic);
-  _syncBankTopicTicks();
-  renderQuestionBank();
-}
-
-// Tick a whole year at once — off again if it is already fully ticked.
-function toggleBankTopicLevel(level, ev) {
-  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-  const list = document.getElementById('bankTopicList');
-  const wrap = list && list.querySelector(`.ms-level[data-level="${level}"]`);
-  const topics = wrap
-    ? Array.from(wrap.querySelectorAll('.ms-item input[type="checkbox"]')).map(c => c.value)
-    : Array.from(new Set(questionBank.flatMap(q => qTopicList(q)))).filter(t => t && getTopicLevel(t) === level);
-  if (!topics.length) return;
-  const allOn = topics.every(t => bankTopicSel.has(t));
-  topics.forEach(t => { if (allOn) bankTopicSel.delete(t); else bankTopicSel.add(t); });
   _syncBankTopicTicks();
   renderQuestionBank();
 }
@@ -17802,13 +17789,9 @@ function rebuildTopicSelect() {
   const sel = document.getElementById('topicSelect');
   if (!sel) return;
   const cur = (sel.value && sel.value !== '__custom__') ? sel.value : '';
-  const byLevel = currentTopicsByLevel();
-  let html = '';
-  TOPIC_LEVELS.forEach(lv => {
-    html += `<optgroup label="── ${lv} ──">`;
-    byLevel[lv].forEach(t => { html += `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`; });
-    html += `</optgroup>`;
-  });
+  // Flat: no P3-P6 optgroups. Manage stays in a group of its own so the
+  // settings entry never reads as another topic.
+  let html = currentTopics().map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
   html += `<optgroup label="── Manage ──"><option value="__custom__">⚙ Add / remove topics…</option></optgroup>`;
   sel.innerHTML = html;
   if (cur && Array.from(sel.options).some(o => o.value === cur && o.value !== '__custom__')) sel.value = cur;
@@ -17818,11 +17801,7 @@ function rebuildTopicSelect() {
   if (sel2) {
     const cur2 = sel2.value || '';
     let html2 = '<option value="">+ Add 2nd topic (optional)</option>';
-    TOPIC_LEVELS.forEach(lv => {
-      html2 += `<optgroup label="── ${lv} ──">`;
-      byLevel[lv].forEach(t => { html2 += `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`; });
-      html2 += `</optgroup>`;
-    });
+    html2 += currentTopics().map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
     sel2.innerHTML = html2;
     sel2.value = (cur2 && Array.from(sel2.options).some(o => o.value === cur2)) ? cur2 : '';
   }
@@ -17839,18 +17818,16 @@ function closeManageTopics() {
 function renderManageTopicsList() {
   const wrap = document.getElementById('manageTopicsList');
   if (!wrap) return;
-  const byLevel = currentTopicsByLevel();
-  wrap.innerHTML = TOPIC_LEVELS.map(lv => {
-    const rows = byLevel[lv].map(t => {
-      const isCustom = !!customTopics[t];
-      const safe = escapeHtml(t).replace(/'/g, "\\'");
-      return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px;">
-        <span style="flex:1;font-size:0.88rem;">${escapeHtml(t)}${isCustom ? ' <span style="font-size:0.7rem;color:var(--primary);">(custom)</span>' : ''}</span>
-        <button class="btn btn-outline" style="padding:2px 9px;font-size:0.78rem;color:var(--accent-red);border-color:#f0b9b9;" onclick="removeTopic('${safe}')">✕ Remove</button>
-      </div>`;
-    }).join('') || `<div style="font-size:0.8rem;color:var(--text-muted);padding:4px 0;">No topics</div>`;
-    return `<div style="margin-bottom:10px;"><div style="font-size:0.72rem;font-weight:700;letter-spacing:0.05em;color:var(--text-muted);text-transform:uppercase;margin-bottom:5px;">${lv}</div>${rows}</div>`;
-  }).join('');
+  // One flat list — the P3-P6 headings are gone from every topic list.
+  const rows = currentTopics().map(t => {
+    const isCustom = !!customTopics[t];
+    const safe = escapeHtml(t).replace(/'/g, "\\'");
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px;">
+      <span style="flex:1;font-size:0.88rem;">${escapeHtml(t)}${isCustom ? ' <span style="font-size:0.7rem;color:var(--primary);">(custom)</span>' : ''}</span>
+      <button class="btn btn-outline" style="padding:2px 9px;font-size:0.78rem;color:var(--accent-red);border-color:#f0b9b9;" onclick="removeTopic('${safe}')">✕ Remove</button>
+    </div>`;
+  }).join('') || `<div style="font-size:0.8rem;color:var(--text-muted);padding:4px 0;">No topics</div>`;
+  wrap.innerHTML = rows;
 }
 function addCustomTopic() {
   const nameEl = document.getElementById('newTopicName');
@@ -19814,6 +19791,10 @@ function _checkAllPartsMarked(containerSel) {
   // Show the "why": an A.I. explanation of the answers. The photo/bulk path makes
   // its own; the click-to-mark path (including MCQ) didn't — so generate one here.
   _genAndShowExplanation(containerSel, q, results, cfg.scoreElId);
+  // …and, when marks were lost, the offer of another question on the same idea.
+  // Injected before the explanation resolves so it settles BELOW it: score,
+  // then why, then what to do about it.
+  try { lgOfferRetry(containerSel, q, results); } catch (e) { console.warn('retry offer', e); }
 }
 
 // Build an answer-specific explanation from the marked parts and show it (falls
@@ -23496,6 +23477,10 @@ function recordCerPerformance(q, score, total, mode, answerText) {
   p.recent = p.recent || [];
   p.recent.push({ pct, topic, category, type: qType, title: q.title || '', mode: mode || '', at: new Date().toISOString() });
   if (p.recent.length > 50) p.recent = p.recent.slice(-50);
+  // Full marks on a question filed under a gap is a step towards closing it.
+  // The threshold matches progressOnMarked's, so "right" means the same thing
+  // to the gap list as it does to the progress counters.
+  if (total && (score / total) >= 0.95) { try { lgNoteWin(q); } catch (e) { console.warn('gap win', e); } }
   p.score100 = _computeScore100(p);
   p.updatedAt = new Date().toISOString();
   setDoc(doc(db, 'users', currentUser.uid, STATS_COL, 'performance'), p, { merge: true }).catch(e => console.warn('perf save', e));
@@ -23582,6 +23567,18 @@ async function renderHomePage() {
         <div class="home-sub">This is what's costing you the most marks. I can turn it into flashcards in one tap.</div>
         <button class="btn btn-blue" onclick="navigateTo('flashcards')">Make my cards</button>`}
       </div>` : '';
+  // The gap list, on the same terms as the revision card above: shown only when
+  // there is actually something on it.
+  let lgTop = null, lgN = 0;
+  try { const act = lgActiveGaps(); lgN = act.length; lgTop = act[0] || null; } catch (_) {}
+  const lgCardHtml = lgTop ? `
+      <div class="home-card">
+        <h3>🎯 My gaps</h3>
+        <div class="home-big" style="font-size:1.35rem;">${lgKindIcon(lgTop.kind)} ${escapeHtml(lgTop.label)}</div>
+        <div class="home-sub">${lgN === 1 ? 'The one thing' : 'The first of ' + lgN + ' things'} you keep getting wrong.
+          I'll pick questions on it — or write you a brand-new one.</div>
+        <button class="btn btn-blue" onclick="navigateTo('gaps')">Work on my gaps</button>
+      </div>` : '';
   c.innerHTML = `
     <div class="home-grid">
       <div class="home-card wide">
@@ -23608,6 +23605,7 @@ async function renderHomePage() {
         <button class="btn btn-blue" onclick="homePractiseWeakest()">Practise this topic</button>` : `
         <div class="home-sub">Answer a few questions and your weakest topic will show up here with a one-tap practice button.</div>`}
       </div>
+      ${lgCardHtml}
       ${fcCardHtml}
       <div class="home-card wide">
         <h3>🧭 Not sure what to do?</h3>
@@ -23652,6 +23650,803 @@ function homePractiseWeakest() {
 }
 
 // =====================================================================
+// LEARNING GAPS — the grammar and vocabulary this student does not yet
+// understand, kept as a list and used to choose what they see next
+//
+// The mistake log below records WHAT went wrong on a particular question. This
+// is the layer above it: the same evidence read as a list of NAMED WEAKNESSES —
+// "subject-verb agreement with collective nouns", "the word 'reluctant'" — that
+// outlives the question it was learnt from.
+//
+// That list does three jobs, and it is the same list for all three:
+//   1. it is shown to the student (and their teacher) as plain English,
+//   2. it PICKS the bank questions they are served next (lgBankQuestionsFor),
+//   3. it BRIEFS the AI when there is nothing left in the bank to serve, so a
+//      brand-new question can be written for the exact gap (lgBuildQuestion).
+//
+// A gap is closed by the student, not by the clock: LG_CLEAR_WINS answers in a
+// row on questions filed under it and it moves to Cleared. One wrong answer
+// re-opens it, because a gap that closes on a lucky guess teaches nobody.
+//
+// Storage: users/{uid}/{SETTINGS_COL}/learningGaps — the student's own tree, so
+// it is covered by the same rules as their settings. Nothing is mirrored to the
+// class collection: a list of what a child cannot do is not a class statistic.
+// =====================================================================
+const GAPS_DOC = 'learningGaps';    // users/{uid}/{SETTINGS_COL}/learningGaps
+const LG_MAX = 60;                  // gaps kept — the oldest, weakest-evidence go first
+const LG_CLEAR_WINS = 3;            // right answers in a row that close a gap
+const LG_EVIDENCE_KEEP = 4;         // "you wrote X" examples kept per gap
+const LG_TEXT_MAX = 200;
+const LG_NEW_PER_ATTEMPT = 2;       // gaps one wrong question may open
+
+// The kinds a gap can have. Grammar and vocabulary are the two the brief names,
+// and they lead; the rest exist so a mistake that is plainly neither is not
+// filed as one of them.
+const LG_KINDS = {
+  grammar:       { label: 'Grammar',       icon: '🔤', topics: ['Grammar', 'Grammar Cloze', 'Synthesis and Transformation'] },
+  vocabulary:    { label: 'Vocabulary',    icon: '📖', topics: ['Vocabulary', 'Vocabulary Cloze', 'Comprehension: Vocabulary in Context'] },
+  spelling:      { label: 'Spelling',      icon: '✍️', topics: ['Punctuation and Spelling', 'Editing for Spelling and Grammar'] },
+  punctuation:   { label: 'Punctuation',   icon: '❞',  topics: ['Punctuation and Spelling'] },
+  comprehension: { label: 'Comprehension', icon: '🔍', topics: ['Comprehension (Open-ended)', 'Comprehension Cloze', 'Comprehension: Inference', 'Visual Text Comprehension'] },
+  writing:       { label: 'Writing',       icon: '📝', topics: ['Continuous Writing', 'Situational Writing', 'Picture Composition'] },
+};
+function lgKindLabel(k) { return (LG_KINDS[k] || {}).label || 'Skill'; }
+function lgKindIcon(k) { return (LG_KINDS[k] || {}).icon || '🎯'; }
+function lgKindOf(raw) { const k = String(raw || '').toLowerCase().trim(); return LG_KINDS[k] ? k : 'grammar'; }
+
+// ---- the store ---------------------------------------------------------
+let lgState = null;                 // null until hydrated, and again after sign-out
+let _lgSaveTimer = null;
+// Walking a question's blocks to read its text is the expensive part of
+// matching, and the gaps page asks for a count per gap — so without this the
+// page costs O(gaps × bank) block walks. Keyed by question id and cleared at the
+// top of each render, so one render is one walk per question however long the
+// list gets. Declared here, above lgOnSignOut, because that clears it.
+let _lgTextCache = new Map();
+
+function lgDefaults() {
+  return { gaps: {}, credits: { dayKey: null, used: 0 }, updatedAt: null };
+}
+function _lgClip(s, n) {
+  return stripHtmlToText(String(s == null ? '' : s)).replace(/\s+/g, ' ').trim().slice(0, n || LG_TEXT_MAX);
+}
+function _lgNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function lgGapKey(kind, label) { return lgKindOf(kind) + ':' + _lgNorm(label); }
+
+// Anything read back from Firestore goes through this, so a half-written or
+// hand-edited document can never take the page down.
+function lgHydrate(saved) {
+  const out = lgDefaults();
+  const gaps = (saved && saved.gaps && typeof saved.gaps === 'object') ? saved.gaps : {};
+  Object.keys(gaps).forEach(k => {
+    const g = gaps[k];
+    if (!g || typeof g !== 'object') return;
+    const label = _lgClip(g.label, 90);
+    if (!label) return;
+    const kind = lgKindOf(g.kind);
+    const key = String(g.key || lgGapKey(kind, label));
+    out.gaps[key] = {
+      key, kind, label,
+      note: _lgClip(g.note, LG_TEXT_MAX),
+      misses: Math.max(1, parseInt(g.misses, 10) || 1),
+      wins: Math.max(0, parseInt(g.wins, 10) || 0),
+      streak: Math.max(0, parseInt(g.streak, 10) || 0),
+      firstAt: String(g.firstAt || g.lastAt || ''),
+      lastAt: String(g.lastAt || ''),
+      qIds: (Array.isArray(g.qIds) ? g.qIds : []).map(String).filter(Boolean).slice(0, 12),
+      evidence: (Array.isArray(g.evidence) ? g.evidence : []).slice(0, LG_EVIDENCE_KEEP).map(e => ({
+        wrote: _lgClip(e && e.wrote, LG_TEXT_MAX),
+        should: _lgClip(e && e.should, LG_TEXT_MAX),
+        onQuestion: _lgClip(e && e.onQuestion, 120),
+        at: String((e && e.at) || ''),
+      })),
+      cleared: !!g.cleared,
+      clearedAt: String(g.clearedAt || ''),
+    };
+  });
+  const c = (saved && saved.credits) || {};
+  out.credits = { dayKey: c.dayKey ? String(c.dayKey) : null, used: Math.max(0, parseInt(c.used, 10) || 0) };
+  out.updatedAt = (saved && saved.updatedAt) || null;
+  return out;
+}
+
+async function lgInit() {
+  if (!currentUser || !db) { lgState = null; return; }
+  try {
+    const s = await getDoc(doc(db, 'users', currentUser.uid, SETTINGS_COL, GAPS_DOC));
+    lgState = lgHydrate(s.exists() ? s.data() : null);
+  } catch (e) {
+    console.warn('learning gaps load', e);
+    lgState = lgHydrate(null);
+  }
+  _lgRollCredits();
+}
+function lgOnSignOut() {
+  lgState = null;
+  _lgTextCache.clear();
+  if (_lgSaveTimer) { clearTimeout(_lgSaveTimer); _lgSaveTimer = null; }
+}
+
+// Writes coalesce: one photo answer marks every part at once and would
+// otherwise be one document write per part.
+function lgSave() {
+  if (!lgState || !currentUser || !db) return;
+  lgState.updatedAt = new Date().toISOString();
+  if (_lgSaveTimer) clearTimeout(_lgSaveTimer);
+  _lgSaveTimer = setTimeout(() => {
+    _lgSaveTimer = null;
+    setDoc(doc(db, 'users', currentUser.uid, SETTINGS_COL, GAPS_DOC), lgState)
+      .catch(e => console.warn('learning gaps save', e));
+  }, 800);
+}
+
+// ---- the daily credits -------------------------------------------------
+// Thirty a day, reset by the calendar day rather than by a rolling 24 hours:
+// a child who practises after school every day gets the same allowance every
+// day, instead of one that drifts later and later.
+const REGEN_DAILY_CREDITS = 30;
+
+function _lgRollCredits() {
+  if (!lgState) return;
+  const today = progressToday();
+  if (lgState.credits.dayKey !== today) {
+    lgState.credits = { dayKey: today, used: 0 };
+  }
+}
+function lgCreditsLeft() {
+  if (!lgState) return 0;
+  _lgRollCredits();
+  return Math.max(0, REGEN_DAILY_CREDITS - (lgState.credits.used | 0));
+}
+// Spends one and reports whether it was there to spend. The caller must not
+// start the AI call unless this returned true.
+function lgSpendCredit() {
+  if (!lgState) return false;
+  if (lgCreditsLeft() <= 0) return false;
+  lgState.credits.used = (lgState.credits.used | 0) + 1;
+  lgSave();
+  try { lgPaintCredits(); } catch (_) {}
+  return true;
+}
+// A credit spent on a call that then FAILED is a credit the student never got
+// anything for, so it goes back.
+function lgRefundCredit() {
+  if (!lgState) return;
+  lgState.credits.used = Math.max(0, (lgState.credits.used | 0) - 1);
+  lgSave();
+  try { lgPaintCredits(); } catch (_) {}
+}
+
+// ---- recording a gap ---------------------------------------------------
+// `items` are { kind, label, note }. Everything else on the record is derived
+// here so no caller can file a half-built gap.
+function lgRecord(items, q, evidence) {
+  if (!lgState || !Array.isArray(items) || !items.length) return [];
+  const at = new Date().toISOString();
+  const qid = String((q && q.id) || '');
+  const touched = [];
+  items.slice(0, LG_NEW_PER_ATTEMPT).forEach(it => {
+    const label = _lgClip(it && it.label, 90);
+    if (!label) return;
+    const kind = lgKindOf(it && it.kind);
+    const key = lgGapKey(kind, label);
+    const g = lgState.gaps[key] || {
+      key, kind, label, note: '', misses: 0, wins: 0, streak: 0,
+      firstAt: at, lastAt: at, qIds: [], evidence: [], cleared: false, clearedAt: '',
+    };
+    g.misses++;
+    g.streak = 0;                     // a fresh miss resets the run towards Cleared
+    g.cleared = false;                // …and re-opens a gap that had been closed
+    g.clearedAt = '';
+    g.lastAt = at;
+    if (!g.note && it && it.note) g.note = _lgClip(it.note, LG_TEXT_MAX);
+    if (qid && g.qIds.indexOf(qid) < 0) g.qIds = [qid].concat(g.qIds).slice(0, 12);
+    const ev = (evidence || []).find(e => e && (e.wrote || e.should));
+    if (ev) {
+      g.evidence = [{
+        wrote: _lgClip(ev.wrote, LG_TEXT_MAX) || '(left blank)',
+        should: _lgClip(ev.should, LG_TEXT_MAX),
+        onQuestion: _lgClip((q && q.title) || '', 120),
+        at,
+      }].concat(g.evidence).slice(0, LG_EVIDENCE_KEEP);
+    }
+    lgState.gaps[key] = g;
+    touched.push(g);
+  });
+  _lgPrune();
+  lgSave();
+  return touched;
+}
+
+// Bounded, like the mistake log. What goes first is what the list is least
+// likely to need: cleared gaps, then the ones missed least and longest ago.
+function _lgPrune() {
+  const keys = Object.keys(lgState.gaps);
+  if (keys.length <= LG_MAX) return;
+  const ranked = keys.map(k => lgState.gaps[k]).sort((a, b) => {
+    if (!!a.cleared !== !!b.cleared) return a.cleared ? 1 : -1;
+    return (b.misses - a.misses) || String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
+  });
+  ranked.slice(LG_MAX).forEach(g => { delete lgState.gaps[g.key]; });
+}
+
+// A right answer on a question filed under a gap. LG_CLEAR_WINS in a row and
+// the gap is Cleared — it stays on the list, in its own section, because
+// "you used to get this wrong and now you don't" is worth showing a child.
+function lgNoteWin(q) {
+  if (!lgState || !q || q.id == null) return;
+  const qid = String(q.id);
+  const tags = (typeof qTagList === 'function' ? qTagList(q) : []).map(t => _lgNorm(t));
+  let changed = false;
+  Object.values(lgState.gaps).forEach(g => {
+    if (g.cleared) return;
+    const linked = g.qIds.indexOf(qid) >= 0 || tags.indexOf(_lgNorm(g.label)) >= 0;
+    if (!linked) return;
+    g.wins++;
+    g.streak++;
+    if (g.streak >= LG_CLEAR_WINS) { g.cleared = true; g.clearedAt = new Date().toISOString(); }
+    changed = true;
+  });
+  if (changed) lgSave();
+}
+
+// ---- naming the gap ----------------------------------------------------
+// The model reads the question, the mark and what the student actually wrote,
+// and names the gap in the words a teacher would use. It is given the gaps
+// already on this student's list and told to REUSE an existing name where it
+// fits, or the same weakness accumulates under three spellings and none of
+// them ever gathers enough evidence to matter.
+function _lgClassifyPrompt(q, parts) {
+  const p = (typeof _docQParts === 'function') ? _docQParts(q) : { text: '' };
+  const known = lgActiveGaps().slice(0, 24).map(g => `${g.kind}: ${g.label}`);
+  const wrong = parts.slice(0, 4).map((x, i) =>
+    `${i + 1}. The mark is for: "${_lgClip(x.expected, 200) || '(not recorded)'}" — the student wrote: "${_lgClip(x.student, 200) || '(left blank)'}"`).join('\n');
+  return [
+    'You are a Singapore primary-school English teacher (P3-P6) keeping a running list of what ONE pupil does not yet understand.',
+    '',
+    'They have just got this question wrong.',
+    'Question topic: ' + ((q && q.topic) || 'English'),
+    'Question: "' + _lgClip(p.text || (q && q.title) || '', 600) + '"',
+    'What went wrong:',
+    wrong,
+    '',
+    known.length ? 'Already on this pupil\'s list — REUSE one of these names EXACTLY if this mistake is the same weakness:\n' + known.join('\n') : 'Their list is empty so far.',
+    '',
+    'Name at most ' + LG_NEW_PER_ATTEMPT + ' weaknesses this mistake actually shows. Reply with ONLY this JSON:',
+    '{"items":[{"kind":"grammar","label":"...","note":"..."}]}',
+    '',
+    'RULES:',
+    '- "kind" is exactly one of: ' + Object.keys(LG_KINDS).join(', ') + '.',
+    '- "label" is the TEACHABLE THING, in a teacher\'s words, at most 8 words and lowercase: "subject-verb agreement with collective nouns", "past perfect tense", "the word \'reluctant\'". For vocabulary, the label is the WORD or phrase itself.',
+    '- Never use the topic as the label. "Grammar" is not a weakness; "using \'fewer\' with countable nouns" is.',
+    '- Only name what THIS mistake shows. A careless slip is not a weakness — if the answer shows no misunderstanding at all, return {"items":[]}.',
+    '- "note" is one short sentence, addressed to "you", saying what to remember. No more than 25 words.',
+    '- Prefer a name already on their list, copied EXACTLY, over a new one that means the same thing.',
+    '- Plain text only. No markdown.',
+  ].join('\n');
+}
+
+// The list must still fill when the AI is off or the call fails, so a mistake
+// falls back to the question's own labelling: its tags name the idea a teacher
+// already wrote down, and failing that its topic does. Coarser than the model's
+// answer, never nothing.
+function _lgFallbackItems(q) {
+  const tags = (typeof qTagList === 'function' ? qTagList(q) : []).filter(Boolean);
+  const topic = String((q && q.topic) || '').trim();
+  const kind = lgKindFromTopic(topic);
+  const names = tags.length ? tags.slice(0, LG_NEW_PER_ATTEMPT) : (topic ? [topic] : []);
+  return names.map(n => ({ kind, label: n, note: '' }));
+}
+function lgKindFromTopic(topic) {
+  const t = String(topic || '');
+  const hit = Object.keys(LG_KINDS).find(k => (LG_KINDS[k].topics || []).indexOf(t) >= 0);
+  if (hit) return hit;
+  const lower = t.toLowerCase();
+  if (lower.indexOf('vocab') >= 0) return 'vocabulary';
+  if (lower.indexOf('spell') >= 0) return 'spelling';
+  if (lower.indexOf('punctuation') >= 0) return 'punctuation';
+  if (lower.indexOf('comprehension') >= 0) return 'comprehension';
+  if (lower.indexOf('writing') >= 0 || lower.indexOf('composition') >= 0) return 'writing';
+  return 'grammar';
+}
+
+// THE ONE ENTRY POINT. Called from fcNoteMistakes — the single function every
+// marking path already funnels its wrong answers through — so there is no
+// second hook to keep in step, and a surface added later is covered for free.
+// Fire-and-forget: a failed classification costs a line on a list, never the
+// marking the student is looking at.
+function lgNoteFromParts(q, parts, mode) {
+  try {
+    if (!lgState || !currentUser || currentUser.role !== 'student' || !q) return;
+    const wrong = (Array.isArray(parts) ? parts : []).filter(p => p && (p.expected || p.student));
+    if (!wrong.length) return;
+    const evidence = wrong.map(p => ({ wrote: p.student, should: p.expected }));
+    const record = items => { if (items && items.length) lgRecord(items, q, evidence); };
+    if (!window.__aiReady || !window.__aiReady()) { record(_lgFallbackItems(q)); return; }
+    askGemini(_lgClassifyPrompt(q, wrong), { maxOutputTokens: 260, temperature: 0.2, json: true })
+      .then(raw => {
+        const parsed = _parseAIJson(raw) || {};
+        const items = (Array.isArray(parsed.items) ? parsed.items : [])
+          .filter(x => x && _lgClip(x.label, 90));
+        // An empty list is a real answer here — the model was told to return one
+        // when the slip shows no misunderstanding — so it is NOT overridden.
+        if (items.length) record(items);
+        else if (!Array.isArray(parsed.items)) record(_lgFallbackItems(q));
+      })
+      .catch(e => { console.warn('gap classify', e); record(_lgFallbackItems(q)); });
+  } catch (e) { console.warn('lgNoteFromParts', e); }
+}
+
+// ---- reading the list --------------------------------------------------
+// Worst first: how often it has been missed, weighted by how recently, the same
+// shape the flashcard gaps use so the two lists never disagree about what
+// matters most.
+// FC_HALFLIFE_DAYS is declared in the flashcards section BELOW this one, so it
+// is in its temporal dead zone here — read at call time only, never at module
+// eval. Nothing in this section runs before the first render, so that holds.
+function _lgScore(g) {
+  const ms = Date.parse(g.lastAt || '') || 0;
+  const rec = ms ? Math.pow(0.5, Math.max(0, (Date.now() - ms) / 86400000) / FC_HALFLIFE_DAYS) : 0.35;
+  return (g.misses || 1) * rec;
+}
+function lgAllGaps() { return lgState ? Object.values(lgState.gaps) : []; }
+function lgActiveGaps() {
+  return lgAllGaps().filter(g => !g.cleared).sort((a, b) => _lgScore(b) - _lgScore(a));
+}
+function lgClearedGaps() {
+  return lgAllGaps().filter(g => g.cleared)
+    .sort((a, b) => String(b.clearedAt || '').localeCompare(String(a.clearedAt || '')));
+}
+function lgGap(key) { return (lgState && lgState.gaps[key]) || null; }
+
+// ---- job 2: feeding the student the RIGHT questions ---------------------
+// The bank is searched for what actually bears on this gap, best first. The
+// questions they got the gap FROM lead — a question you could not do is the
+// most relevant question there is — then anything tagged with the gap's name,
+// then the topics that teach this kind, and for a vocabulary gap, any question
+// whose text uses the word.
+//
+// Everything is filtered to what this student may be served at all: markable,
+// in syllabus, within their level. A gap can outlive the questions that made it
+// (they get retagged, they get deleted), so an empty result is normal and the
+// caller must handle it rather than treat it as an error.
+function _lgQText(q) {
+  const k = String(q.id);
+  let v = _lgTextCache.get(k);
+  if (v === undefined) {
+    v = ((q.title || '') + ' ' + ((_docQParts(q) || {}).text || ''));
+    _lgTextCache.set(k, v);
+  }
+  return v;
+}
+
+function lgBankQuestionsFor(gap, limit) {
+  if (!gap) return [];
+  const bank = Array.isArray(questionBank) ? questionBank : [];
+  const label = _lgNorm(gap.label);
+  const kindTopics = (LG_KINDS[gap.kind] || {}).topics || [];
+  const fromGap = new Set(gap.qIds.map(String));
+  // A vocabulary gap is a WORD, so a question that uses it is on point. Two
+  // letters or fewer would match half the bank, so those score on tags alone.
+  const word = (gap.kind === 'vocabulary' && label.length > 2) ? label : '';
+  const wordRe = word ? new RegExp('\\b' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i') : null;
+
+  const scored = [];
+  bank.forEach(q => {
+    if (!q || q.id == null) return;
+    if (!questionHasMarkableAnswer(q) || !qInSyllabus(q) || !qWithinStudentLevel(q)) return;
+    let score = 0;
+    if (fromGap.has(String(q.id))) score += 100;
+    const tags = (typeof qTagList === 'function' ? qTagList(q) : []).map(t => _lgNorm(t));
+    if (tags.indexOf(label) >= 0) score += 60;
+    else if (tags.some(t => t && (t.indexOf(label) >= 0 || label.indexOf(t) >= 0))) score += 30;
+    const topics = (typeof qTopicList === 'function') ? qTopicList(q) : [q.topic];
+    if (topics.some(t => kindTopics.indexOf(t) >= 0)) score += 12;
+    if (wordRe && wordRe.test(_lgQText(q))) score += 45;
+    if (score > 0) scored.push({ q, score });
+  });
+  scored.sort((a, b) => (b.score - a.score) || (String(a.q.title || '')).localeCompare(String(b.q.title || '')));
+  return scored.slice(0, Math.max(1, limit || 12)).map(x => x.q);
+}
+
+// Practise a gap out of the bank. It runs on the Topical Practice surface —
+// the same queue, the same renderer, the same marking — because a gap session
+// is a topical session whose topic happens to be one weakness.
+async function lgPractiseGap(key) {
+  const gap = lgGap(key);
+  if (!gap) return;
+  const queue = lgBankQuestionsFor(gap, 12);
+  if (!queue.length) {
+    showToast('Nothing in the bank for this one yet — try “New question” instead', 'info');
+    return;
+  }
+  tpActiveTopics = [gap.label];
+  navigateTo('topicalpractice');
+  await tpRunQueue(queue, {
+    title: gap.label,
+    subtitle: lgKindLabel(gap.kind) + ' — ' + queue.length + ' question' + (queue.length === 1 ? '' : 's') + ' on this gap',
+    labelHtml: `<span class="tp-level-badge" style="background:var(--accent-orange-light);color:var(--accent-orange);">${lgKindIcon(gap.kind)} ${escapeHtml(gap.label)}</span>`,
+    emptyMsg: 'Nothing in the bank for this one yet',
+    restart: () => lgPractiseGap(key),
+  });
+}
+
+// ---- job 3: writing a NEW question for the gap --------------------------
+// When the bank has nothing left — or the student has just spent a credit for
+// another go at something they got wrong — the question is written to order.
+//
+// It goes through buildBlocksFromAi like every other AI authoring path, so a
+// generated question is the same shape as a bank one and every student surface
+// renders it unchanged. It is NOT saved: the bank is the teacher's, and a
+// question nobody has vetted does not belong in it.
+let _lgGenN = 0;
+
+function _lgGenPrompt(gap, sourceQ, evidence) {
+  const src = sourceQ ? _docQParts(sourceQ) : null;
+  const lines = [
+    'You are a Singapore primary-school English teacher (P3-P6) writing ONE new practice question for a single pupil.',
+    '',
+    'The weakness it must test: ' + lgKindLabel(gap.kind).toLowerCase() + ' — "' + gap.label + '".',
+  ];
+  if (gap.note) lines.push('What they need to remember: ' + gap.note);
+  if (evidence && (evidence.wrote || evidence.should)) {
+    lines.push('Last time, the mark was for "' + _lgClip(evidence.should, 200) + '" and they wrote "' + _lgClip(evidence.wrote, 200) + '".');
+  }
+  if (src && src.text) {
+    lines.push('', 'The question they got wrong (write a DIFFERENT one testing the SAME thing — new situation, new words, never a reworded copy):',
+      '"' + _lgClip(src.text, 500) + '"');
+  }
+  lines.push(
+    '',
+    'Reply with ONLY this JSON:',
+    '{"title":"a short title, at most 8 words","blocks":[{"type":"text","text":"the question as the pupil reads it"},{"type":"mcq","options":["...","...","...","..."],"correctIndex":0},{"type":"explanation","text":"..."}]}',
+    '',
+    'RULES:',
+    '- Use an "mcq" block with EXACTLY 4 options for a question with one right answer, and "correctIndex" as its 0-based position. Otherwise use {"type":"plainanswer","text":"the full model answer"} instead of the mcq block.',
+    '- Exactly ONE "text" block, then ONE answer block (mcq or plainanswer), then ONE "explanation" block. Nothing else — this pupil sees it on a phone.',
+    '- The question must aim STRAIGHT at the weakness named above. If it could be answered without understanding that, it is the wrong question.',
+    '- Never mention a picture, diagram, table or passage: there is none, and a question that refers to one cannot be answered.',
+    '- No sub-parts, no (a)/(b): one question, one answer.',
+    '- The "explanation" is 2-4 sentences addressed to "you", saying why the answer is right and what rule to remember.',
+    '- Singapore primary-school English, plain text only. No markdown, no [[brackets]].');
+  return lines.join('\n');
+}
+
+// Build one generated question object for a gap. Throws with a message worth
+// showing — every caller is a button the student just pressed.
+async function lgBuildQuestion(gap, sourceQ) {
+  if (!gap) throw new Error('that gap is no longer on your list');
+  if (!window.__aiReady || !window.__aiReady()) throw new Error('the AI is not ready — try again in a moment');
+  const evidence = (gap.evidence || [])[0] || null;
+  const raw = await askGemini(_lgGenPrompt(gap, sourceQ, evidence), {
+    maxOutputTokens: 900, temperature: 0.7, json: true,
+  });
+  const data = _parseAIJson(raw);
+  if (!data || typeof data !== 'object') throw new Error('the AI did not return a usable question');
+  const built = buildBlocksFromAi(data);
+  const blocks = (built && built.blocks) || [];
+  const q = {
+    // `gen_` keeps a generated id from ever colliding with a bank one, and makes
+    // it obvious in an attempts row where the question came from.
+    id: 'gen_' + Date.now().toString(36) + '_' + (++_lgGenN),
+    title: _lgClip(data.title, 90) || ('Practice: ' + gap.label),
+    topic: (sourceQ && sourceQ.topic) || (LG_KINDS[gap.kind] || {}).topics[0] || 'Grammar',
+    category: (sourceQ && sourceQ.category) || 'Key Concepts',
+    tags: [gap.label],
+    blocks,
+    generated: true,
+    fromGap: gap.key,
+  };
+  if (!questionHasMarkableAnswer(q)) throw new Error('the AI did not return a question that can be marked');
+  return q;
+}
+
+// ---- rendering a generated question ------------------------------------
+// Each one gets its OWN container id. buildOpenBody keys its answer stores by
+// container selector, so two cards sharing a selector would clobber each
+// other's answers — the same trap the whole-paper worksheet editor has.
+function lgRenderGenerated(hostEl, q, opts) {
+  if (!hostEl || !q) return '';
+  const cfg = opts || {};
+  const id = 'lgGen_' + String(q.id).replace(/[^a-zA-Z0-9_]/g, '');
+  const sel = '#' + id;
+  const scoreId = id + '_score';
+  const body = buildOpenBody(q, sel, {
+    scoreElId: scoreId,
+    scorePrefix: 'AI Score',
+    mode: cfg.mode || 'gap-generated',
+    onAllMarked: cfg.onAllMarked || null,
+  });
+  hostEl.insertAdjacentHTML('beforeend', `
+    <div class="practice-card lg-gen-card" id="${id}">
+      <div class="practice-card-header">
+        <h3>${escapeHtml(q.title)}</h3>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <span class="qb-tag" style="background:var(--accent-orange-light);color:var(--accent-orange);">✨ Written for you</span>
+          ${cfg.gapLabel ? `<span class="qb-tag topic">${escapeHtml(cfg.gapLabel)}</span>` : ''}
+        </div>
+      </div>
+      <div class="practice-card-body">${body}</div>
+      <div class="practice-actions">
+        <div class="practice-score" id="${scoreId}"></div>
+        <div style="font-size:0.76rem;color:var(--text-muted);">Not from the question bank — written just now for this gap</div>
+      </div>
+    </div>`);
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return sel;
+}
+
+// ---- another go at a question you got wrong ----------------------------
+// Thirty credits a day. One credit buys a NEW question on the same idea — not
+// the same question again, which only tests whether they read the answer we
+// just showed them.
+//
+// The offer is made from _checkAllPartsMarked, the one place every surface
+// finishes marking, so it appears wherever a student answers: quick practice,
+// topical practice, a gap session, and on a generated question too — getting the
+// retry wrong is exactly when another one is worth having.
+let _lgRetryStore = {};        // token → the question and what went wrong on it
+let _lgRetryN = 0;
+
+// The gap this retry should aim at. The list is asked first — by the time a
+// student has read their feedback the classifier has usually landed — and where
+// it has nothing yet, the question's own labelling stands in, so a retry is
+// never blocked waiting for an AI call.
+function _lgRetryGap(rec) {
+  const qid = String((rec.q && rec.q.id) || '');
+  const onList = lgActiveGaps().find(g => g.qIds.indexOf(qid) >= 0);
+  if (onList) return onList;
+  const fallback = _lgFallbackItems(rec.q)[0] || { kind: lgKindFromTopic(rec.q && rec.q.topic), label: (rec.q && rec.q.topic) || 'English' };
+  const w = rec.wrong[0] || {};
+  return {
+    key: '', kind: lgKindOf(fallback.kind), label: fallback.label, note: '',
+    qIds: qid ? [qid] : [], evidence: [{ wrote: w.student, should: w.expected }],
+  };
+}
+
+function lgOfferRetry(containerSel, q, results) {
+  if (!lgState || !currentUser || currentUser.role !== 'student' || !q) return;
+  const wrong = Object.values(results || {}).filter(r => r && r.verdict !== 'correct');
+  if (!wrong.length) return;                       // full marks needs no second go
+  const c = document.querySelector(containerSel);
+  if (!c) return;
+  // Scoped to THIS container, so the offer under a generated question does not
+  // read as the outer question's and block it.
+  if (c.querySelector('.lg-retry-offer')) return;
+  const token = 'rt' + (++_lgRetryN);
+  _lgRetryStore[token] = { q, wrong: wrong.map(r => ({ expected: r.expected, student: r.student })) };
+  const left = lgCreditsLeft();
+  const html = `
+    <div class="lg-retry-offer" id="lgRetryWrap_${token}">
+      <div class="lg-retry-head">
+        <div>
+          <div class="lg-retry-title">🔄 Try another one like it</div>
+          <div class="lg-retry-sub">A brand-new question on the same idea — that is how you find out whether it has stuck.</div>
+        </div>
+        <span class="lg-credit-chip" data-lg-credits>${left} / ${REGEN_DAILY_CREDITS} left today</span>
+      </div>
+      <div class="lg-retry-actions">
+        <button class="btn btn-primary" id="lgRetryBtn_${token}" onclick="lgRetry('${token}')"${left <= 0 ? ' disabled' : ''}>
+          ${left > 0 ? '✨ New question (1 credit)' : 'No credits left today'}
+        </button>
+      </div>
+      <div id="lgRetryHost_${token}"></div>
+    </div>`;
+  // Always LAST in the container. The explanation cards insert themselves after
+  // the action bar, and they arrive whenever their AI call returns — anchoring
+  // the offer to the same place would put it above the explanation on an MCQ
+  // (no AI call, so it lands synchronously) and below it on a written answer.
+  // Appending at the end is the only placement that reads the same every time:
+  // score, then why, then what to do about it.
+  c.insertAdjacentHTML('beforeend', html);
+}
+
+async function lgRetry(token) {
+  const rec = _lgRetryStore[token];
+  if (!rec) return;
+  const btn = document.getElementById('lgRetryBtn_' + token);
+  const host = document.getElementById('lgRetryHost_' + token);
+  if (!host) return;
+  if (!window.__aiReady || !window.__aiReady()) {
+    showToast('The AI is not ready yet — try again in a moment', 'info');
+    return;
+  }
+  // Spend BEFORE the call, so two quick taps cannot buy two questions for one
+  // credit; a call that then fails refunds it.
+  if (!lgSpendCredit()) {
+    showToast(`That is all ${REGEN_DAILY_CREDITS} of today's credits — you get ${REGEN_DAILY_CREDITS} more tomorrow`, 'info');
+    if (btn) { btn.disabled = true; btn.textContent = 'No credits left today'; }
+    return;
+  }
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '✨ Writing your question…'; }
+  try {
+    const gap = _lgRetryGap(rec);
+    const gq = await lgBuildQuestion(gap, rec.q);
+    lgRenderGenerated(host, gq, { mode: 'retry-generated', gapLabel: gap.label });
+    // One credit, one question: the button is done. Getting the NEW question
+    // wrong offers its own retry, so the chain continues from there.
+    if (btn) {
+      btn.remove();
+      const wrap = document.getElementById('lgRetryWrap_' + token);
+      const sub = wrap && wrap.querySelector('.lg-retry-sub');
+      if (sub) sub.textContent = 'Here is a new question on the same idea. Answer it the way you would in an exam.';
+    }
+  } catch (e) {
+    lgRefundCredit();
+    console.warn('retry generate', e);
+    showToast('Could not write a new question — ' + ((e && e.message) || 'try again') + ' (your credit was not used)', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+  }
+}
+
+// Every place the number of credits is shown, refreshed from the one store.
+function lgPaintCredits() {
+  const left = lgCreditsLeft();
+  document.querySelectorAll('[data-lg-credits]').forEach(el => {
+    el.textContent = left + ' / ' + REGEN_DAILY_CREDITS + ' left today';
+  });
+  const badge = document.getElementById('lgGapBadge');
+  if (badge) {
+    const n = lgState ? lgActiveGaps().length : 0;
+    badge.textContent = n;
+    badge.style.display = n > 0 ? '' : 'none';
+  }
+}
+
+// ---- the page ----------------------------------------------------------
+// A gap key is `kind:normalised label`, so it is always [a-z0-9 :] — mapping
+// ':' and ' ' onto distinct underscore runs keeps this injective, which a bare
+// strip of non-alphanumerics would not (two different gaps could then share one
+// host element and the second one's button would silently do nothing). Both the
+// card and the generate button MUST derive the id from here.
+function _lgHostId(key) {
+  return 'lgGapHost_' + String(key).replace(/:/g, '__').replace(/ /g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+}
+
+function _lgGapCardHtml(g, cleared) {
+  const bankN = lgBankQuestionsFor(g, 12).length;
+  const ev = (g.evidence || [])[0];
+  const safe = String(g.key).replace(/'/g, "\\'");
+  const when = _fcWhenLabel(Date.parse(g.lastAt || '') || 0);
+  return `
+    <div class="lg-gap-card${cleared ? ' cleared' : ''}">
+      <div class="lg-gap-top">
+        <span class="lg-gap-icon">${lgKindIcon(g.kind)}</span>
+        <div class="lg-gap-name">
+          <div class="lg-gap-label">${escapeHtml(g.label)}</div>
+          <div class="lg-gap-meta">
+            <span class="lg-kind-chip">${escapeHtml(lgKindLabel(g.kind))}</span>
+            <span>Missed ${g.misses} time${g.misses === 1 ? '' : 's'}</span>
+            <span>·</span>
+            <span>Last ${escapeHtml(when)}</span>
+            ${cleared ? '<span>·</span><span class="lg-cleared-chip">✓ Cleared</span>'
+              : (g.streak ? `<span>·</span><span class="lg-streak-chip">${g.streak}/${LG_CLEAR_WINS} right in a row</span>` : '')}
+          </div>
+        </div>
+      </div>
+      ${g.note ? `<div class="lg-gap-note">${escapeHtml(g.note)}</div>` : ''}
+      ${ev && (ev.wrote || ev.should) ? `
+        <div class="lg-gap-evidence">
+          <div><span class="lg-ev-key">You wrote</span> “${escapeHtml(ev.wrote || '(left blank)')}”</div>
+          ${ev.should ? `<div><span class="lg-ev-key">The mark is for</span> “${escapeHtml(ev.should)}”</div>` : ''}
+        </div>` : ''}
+      <div class="lg-gap-actions">
+        <button class="btn btn-outline" onclick="lgPractiseGap('${safe}')"${bankN ? '' : ' disabled'}>
+          📚 Practise${bankN ? ` (${bankN})` : ' — none in the bank'}
+        </button>
+        <button class="btn btn-primary" onclick="lgGenerateForGap('${safe}')">✨ New question (1 credit)</button>
+        ${cleared ? '' : `<button class="btn btn-outline lg-got-it" onclick="lgMarkGotIt('${safe}')">I've got this</button>`}
+      </div>
+      <div id="${_lgHostId(g.key)}" class="lg-gap-host"></div>
+    </div>`;
+}
+
+function renderGapsPage() {
+  const c = document.getElementById('gapsContainer');
+  if (!c) return;
+  if (!lgState) {
+    c.innerHTML = '<div class="lg-empty">Loading your list…</div>';
+    lgInit().then(() => renderGapsPage()).catch(() => {
+      c.innerHTML = '<div class="lg-empty">Could not load your list — check your connection.</div>';
+    });
+    return;
+  }
+  // One walk per question for this whole render, however many gaps are listed.
+  _lgTextCache.clear();
+  const active = lgActiveGaps();
+  const cleared = lgClearedGaps();
+  const left = lgCreditsLeft();
+
+  let html = `
+    <div class="lg-credit-bar">
+      <div>
+        <div class="lg-credit-title">✨ ${left} of ${REGEN_DAILY_CREDITS} credits left today</div>
+        <div class="lg-credit-sub">Each credit writes you a brand-new question on something you got wrong. They refill every day.</div>
+      </div>
+      <span class="lg-credit-chip" data-lg-credits>${left} / ${REGEN_DAILY_CREDITS} left today</span>
+    </div>`;
+
+  if (!active.length && !cleared.length) {
+    html += `
+      <div class="lg-empty">
+        <div class="lg-empty-icon">🎯</div>
+        <div class="lg-empty-title">Nothing on your list yet</div>
+        <div class="lg-empty-sub">Answer some questions and anything you get wrong turns up here — the exact grammar
+          point or word, not just the topic — so you can practise that instead of everything.</div>
+        <button class="btn btn-primary" onclick="navigateTo('${practicePageFor()}')">Start practising</button>
+      </div>`;
+  } else {
+    html += active.length ? `
+      <div class="lg-section-head">
+        <h3>Working on</h3>
+        <span class="lg-section-sub">${active.length} thing${active.length === 1 ? '' : 's'} to crack — hardest first</span>
+      </div>
+      ${active.map(g => _lgGapCardHtml(g, false)).join('')}` : `
+      <div class="lg-empty">
+        <div class="lg-empty-icon">🎉</div>
+        <div class="lg-empty-title">Nothing outstanding</div>
+        <div class="lg-empty-sub">Everything you have got wrong, you have since got right. Keep practising and this list
+          will fill itself back up.</div>
+      </div>`;
+    if (cleared.length) {
+      html += `
+        <div class="lg-section-head">
+          <h3>Cleared</h3>
+          <span class="lg-section-sub">${cleared.length} you used to get wrong and now don't</span>
+        </div>
+        ${cleared.map(g => _lgGapCardHtml(g, true)).join('')}`;
+    }
+  }
+  c.innerHTML = html;
+  lgPaintCredits();
+}
+
+// Write one new question for a gap, straight onto the card. Costs a credit —
+// the same credit the retry button spends, because it buys the same thing.
+async function lgGenerateForGap(key) {
+  const gap = lgGap(key);
+  if (!gap) return;
+  const host = document.getElementById(_lgHostId(key));
+  if (!host) return;
+  if (!window.__aiReady || !window.__aiReady()) {
+    showToast('The AI is not ready yet — try again in a moment', 'info');
+    return;
+  }
+  if (!lgSpendCredit()) {
+    showToast(`That is all ${REGEN_DAILY_CREDITS} of today's credits — you get ${REGEN_DAILY_CREDITS} more tomorrow`, 'info');
+    return;
+  }
+  host.innerHTML = '<div class="lg-gen-wait">✨ Writing a question for this…</div>';
+  try {
+    const sourceQ = (gap.qIds || []).map(id => (questionBank || []).find(q => String(q.id) === String(id))).find(Boolean) || null;
+    const q = await lgBuildQuestion(gap, sourceQ);
+    host.innerHTML = '';
+    lgRenderGenerated(host, q, { mode: 'gap-generated', gapLabel: gap.label });
+  } catch (e) {
+    lgRefundCredit();
+    console.warn('gap generate', e);
+    host.innerHTML = '';
+    showToast('Could not write a question — ' + ((e && e.message) || 'try again') + ' (your credit was not used)', 'error');
+  }
+}
+
+// The student's own call that a gap is closed. It stays on the list under
+// Cleared, and one wrong answer re-opens it (lgRecord clears the flag), so this
+// is a shortcut rather than a way to delete the evidence.
+function lgMarkGotIt(key) {
+  const g = lgGap(key);
+  if (!g) return;
+  g.cleared = true;
+  g.clearedAt = new Date().toISOString();
+  g.streak = Math.max(g.streak, LG_CLEAR_WINS);
+  lgSave();
+  renderGapsPage();
+  showToast(`Moved “${g.label}” to Cleared — it comes back if you slip on it again`, 'success');
+}
+
+// =====================================================================
 // REVISION FLASHCARDS — built from the mistakes this student actually made
 //
 // The point of a flashcard here is NOT to cover the syllabus. It is to cover the
@@ -23690,8 +24485,8 @@ const FC_PARTS_PER_ATTEMPT = 6;
 let mistakeLog = [];            // newest first
 let _mistakeLogAt = 0;
 
-function _mkCol() { return collection(db, 'users', currentUser.uid, 'mistakes'); }
-function _mkRef(id) { return doc(db, 'users', currentUser.uid, 'mistakes', id); }
+function _mkCol() { return collection(db, 'users', currentUser.uid, MISTAKES_COL); }
+function _mkRef(id) { return doc(db, 'users', currentUser.uid, MISTAKES_COL, id); }
 function _fcClip(s) {
   return stripHtmlToText(String(s == null ? '' : s)).replace(/\s+/g, ' ').trim().slice(0, FC_TEXT_MAX);
 }
@@ -23724,6 +24519,10 @@ function fcNoteMistakes(q, parts, mode) {
       setDoc(_mkRef(rec.id), rec).catch(e => console.warn('mistake log write', e));
     });
     if (mistakeLog.length > FC_LOG_KEEP) _fcPruneLog();
+    // The same evidence, read as a list of named weaknesses. This is the ONE
+    // place the gap list is fed, because this is the one place every marking
+    // path already brings its wrong answers.
+    lgNoteFromParts(q, list, mode);
   } catch (e) { console.warn('fcNoteMistakes', e); }
 }
 
@@ -23960,8 +24759,8 @@ const FC_INTERVAL_DAYS = [0, 1, 3, 7, 16];
 let fcDecks = [];
 let fcRun = null;      // { deckId, queue:[cardId], i, flipped, right, wrong } while reviewing
 
-function _fcCol() { return collection(db, 'users', currentUser.uid, 'flashcards'); }
-function _fcRef(id) { return doc(db, 'users', currentUser.uid, 'flashcards', id); }
+function _fcCol() { return collection(db, 'users', currentUser.uid, FLASHCARDS_COL); }
+function _fcRef(id) { return doc(db, 'users', currentUser.uid, FLASHCARDS_COL, id); }
 
 // Anything loaded from Firestore is put through this, so a half-written or
 // hand-edited document can never break the review screen.
@@ -24516,47 +25315,42 @@ function tpRenderTopics() {
     if (getLevelNumber(tLevel) > studentLevelNum) tpSelectedTopics.delete(t);
   });
 
-  let html = '';
-  const levels = ['P3', 'P4', 'P5', 'P6'];
+  // ONE flat grid. The P3/P4/P5/P6 headings that used to bracket this list are
+  // gone — an English topic is not owned by a year the way a Science one is, and
+  // four headings on a phone pushed the actual topics below the fold. The level
+  // each topic is filed under still decides whether it is unlocked; it is simply
+  // no longer announced. Topics stay in level order, so everything a student can
+  // reach still comes before everything they cannot.
+  let html = '<div class="tp-topic-grid">';
+  const flatTopics = TOPIC_LEVELS.reduce((a, lv) => a.concat(topicsByLevel[lv] || []), []);
 
-  levels.forEach(level => {
-    const levelNum = getLevelNumber(level);
-    const isAccessible = levelNum <= studentLevelNum;
-    const topics = topicsByLevel[level] || [];
-    const colors = levelColors[level];
-
-    html += `<div class="tp-level-section">
-      <div class="tp-level-heading">
-        <span class="tp-level-badge" style="background:${colors.bg};color:${colors.fg};">${level}</span>
-        ${!isAccessible ? '<span style="font-size:0.78rem;color:var(--text-light);font-weight:400;">Locked — select a higher level to unlock</span>' : ''}
-      </div>
-      <div class="tp-topic-grid">`;
-
-    topics.forEach(topic => {
-      const count = topicCounts[topic] || 0;
-      const emoji = topicEmojis[topic] || '📘';
-      const isSelected = tpSelectedTopics.has(topic);
-      if (isAccessible) {
-        html += `<button class="tp-topic-btn${count === 0 ? ' disabled' : ''}${isSelected ? ' selected' : ''}" onclick="${count > 0 ? `tpToggleTopic('${topic.replace(/'/g, "\\'")}')` : ''}">
-          <div class="tp-topic-icon" style="background:${colors.bg};font-size:1.3rem;">
-            ${emoji}
-          </div>
-          <span class="tp-topic-name">${escapeHtml(topic)}</span>
-          <span class="tp-topic-count">${count} Q</span>
-        </button>`;
-      } else {
-        html += `<button class="tp-topic-btn disabled">
-          <div class="tp-topic-icon" style="background:var(--surface-alt);font-size:1.3rem;filter:grayscale(1) opacity(0.4);">
-            ${emoji}
-          </div>
-          <span class="tp-topic-name">${escapeHtml(topic)}</span>
-          <span class="tp-lock-icon">🔒</span>
-        </button>`;
-      }
-    });
-
-    html += `</div></div>`;
+  flatTopics.forEach(topic => {
+    const level = getTopicLevel(topic);
+    const isAccessible = getLevelNumber(level) <= studentLevelNum;
+    const colors = levelColors[level] || levelColors['P6'];
+    const count = topicCounts[topic] || 0;
+    const emoji = topicEmojis[topic] || '📘';
+    const isSelected = tpSelectedTopics.has(topic);
+    if (isAccessible) {
+      html += `<button class="tp-topic-btn${count === 0 ? ' disabled' : ''}${isSelected ? ' selected' : ''}" onclick="${count > 0 ? `tpToggleTopic('${topic.replace(/'/g, "\\'")}')` : ''}">
+        <div class="tp-topic-icon" style="background:${colors.bg};font-size:1.3rem;">
+          ${emoji}
+        </div>
+        <span class="tp-topic-name">${escapeHtml(topic)}</span>
+        <span class="tp-topic-count">${count} Q</span>
+      </button>`;
+    } else {
+      html += `<button class="tp-topic-btn disabled" title="Locked — choose a higher level to unlock">
+        <div class="tp-topic-icon" style="background:var(--surface-alt);font-size:1.3rem;filter:grayscale(1) opacity(0.4);">
+          ${emoji}
+        </div>
+        <span class="tp-topic-name">${escapeHtml(topic)}</span>
+        <span class="tp-lock-icon">🔒</span>
+      </button>`;
+    }
   });
+
+  html += `</div>`;
 
   grid.innerHTML = html;
   tpUpdateSelectionBar();
@@ -24644,14 +25438,57 @@ async function tpStartPractice() {
     remaining = remaining.filter(t => indices[t] < questionsByTopic[t].length);
   }
 
-  tpQueue = queue;
+  let title, subtitle, labelHtml;
+  if (tpActiveTopics.length === 1) {
+    tpCurrentTopic = tpActiveTopics[0];
+    const topicLevel = getTopicLevel(tpCurrentTopic);
+    const colors = levelColors[topicLevel] || levelColors['P6'];
+    title = tpCurrentTopic;
+    subtitle = topicLevel + ' — ' + queue.length + ' question' + (queue.length !== 1 ? 's' : '');
+    labelHtml = `
+      <span class="tp-level-badge" style="background:${colors.bg};color:${colors.fg};">${topicLevel}</span>
+      ${escapeHtml(tpCurrentTopic)}`;
+  } else {
+    tpCurrentTopic = tpActiveTopics.join(', ');
+    title = 'Mixed Topics Practice';
+    subtitle = tpActiveTopics.length + ' topics — ' + queue.length + ' question' + (queue.length !== 1 ? 's' : '');
+    labelHtml = tpActiveTopics.map(t => {
+      const lv = getTopicLevel(t);
+      const c = levelColors[lv] || levelColors['P6'];
+      const em = topicEmojis[t] || '📘';
+      return `<span class="tp-level-badge" style="background:${c.bg};color:${c.fg};margin-right:4px;">${em} ${escapeHtml(t)}</span>`;
+    }).join('');
+  }
+
+  await tpRunQueue(queue, {
+    title, subtitle, labelHtml,
+    emptyMsg: 'No markable questions found for the selected topics',
+    restart: () => tpStartPractice(),
+  });
+}
+
+// How to run the session that just finished, again. Set by whoever filled the
+// queue, because "Restart" on the end-of-session report cannot know whether it
+// is restarting a topic selection or a gap — and a gap session left to the
+// topic path lands on "Select at least one topic first", a button that does
+// nothing but tell you off.
+let _tpRestart = null;
+function tpRestart() { if (typeof _tpRestart === 'function') _tpRestart(); else tpStartPractice(); }
+
+// Put a queue of questions on this surface and start it. Topical Practice and
+// gap practice both come through here, so a session started from the gap list
+// is the same session in every respect but what filled the queue.
+async function tpRunQueue(queue, opts) {
+  const cfg = opts || {};
+  _tpRestart = (typeof cfg.restart === 'function') ? cfg.restart : null;
+  tpQueue = Array.isArray(queue) ? queue : [];
   tpSessionResults = [];
   tpIndex = -1;
   tpAnswered = 0;
 
   if (tpQueue.length === 0) {
-    showToast('No markable questions found for the selected topics', 'error');
-    return;
+    showToast(cfg.emptyMsg || 'No markable questions found', 'error');
+    return false;
   }
 
   // Switch to practice view
@@ -24661,32 +25498,14 @@ async function tpStartPractice() {
   document.getElementById('tpPracticeArea').style.display = '';
   document.getElementById('tpBackBtn').style.display = '';
 
-  if (tpActiveTopics.length === 1) {
-    tpCurrentTopic = tpActiveTopics[0];
-    document.getElementById('tpPageTitle').textContent = tpCurrentTopic;
-    const topicLevel = getTopicLevel(tpCurrentTopic);
-    document.getElementById('tpPageSubtitle').textContent = topicLevel + ' — ' + tpQueue.length + ' question' + (tpQueue.length !== 1 ? 's' : '');
-    const colors = levelColors[topicLevel] || levelColors['P6'];
-    document.getElementById('tpCurrentTopicLabel').innerHTML = `
-      <span class="tp-level-badge" style="background:${colors.bg};color:${colors.fg};">${topicLevel}</span>
-      ${escapeHtml(tpCurrentTopic)}`;
-  } else {
-    tpCurrentTopic = tpActiveTopics.join(', ');
-    document.getElementById('tpPageTitle').textContent = 'Mixed Topics Practice';
-    document.getElementById('tpPageSubtitle').textContent = tpActiveTopics.length + ' topics — ' + tpQueue.length + ' question' + (tpQueue.length !== 1 ? 's' : '');
-    let labelHtml = '';
-    tpActiveTopics.forEach(t => {
-      const lv = getTopicLevel(t);
-      const c = levelColors[lv] || levelColors['P6'];
-      const em = topicEmojis[t] || '📘';
-      labelHtml += `<span class="tp-level-badge" style="background:${c.bg};color:${c.fg};margin-right:4px;">${em} ${escapeHtml(t)}</span>`;
-    });
-    document.getElementById('tpCurrentTopicLabel').innerHTML = labelHtml;
-  }
+  document.getElementById('tpPageTitle').textContent = cfg.title || 'Practice';
+  document.getElementById('tpPageSubtitle').textContent = cfg.subtitle || '';
+  document.getElementById('tpCurrentTopicLabel').innerHTML = cfg.labelHtml || '';
 
   // Preload all images in the queue before starting
   await preloadQueueImages(tpQueue);
   tpLoadNextQuestion();
+  return true;
 }
 
 // Legacy single-topic start (kept for compatibility but routes through multi-select)
@@ -24704,7 +25523,7 @@ function tpLoadNextQuestion() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
           Back to Topics
         </button>
-        <button class="btn btn-primary" onclick="tpStartPractice()">
+        <button class="btn btn-primary" onclick="tpRestart()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Restart
         </button>`);
@@ -25427,7 +26246,7 @@ let selectedScheduleQuestionId = null;
 async function loadScheduledQuestions() {
   if (!currentUser || currentUser.role !== 'admin') return;
   try {
-    const schedCol = collection(db, 'users', currentUser.uid, 'scheduledQuestions');
+    const schedCol = collection(db, 'users', currentUser.uid, SCHEDULED_COL);
     const snap = await getDocs(schedCol);
     scheduledQuestions = [];
     snap.forEach(d => {
@@ -25470,7 +26289,7 @@ async function checkAndReleaseScheduledQuestions() {
       // Mark as released
       sq.released = true;
       try {
-        const schedRef = doc(db, 'users', currentUser.uid, 'scheduledQuestions', sq._docId);
+        const schedRef = doc(db, 'users', currentUser.uid, SCHEDULED_COL, sq._docId);
         await updateDoc(schedRef, { released: true });
       } catch (err) {
         console.warn('Could not mark scheduled question as released:', err);
@@ -25654,7 +26473,7 @@ async function submitScheduledQuestion() {
       });
     }
 
-    const schedCol = collection(db, 'users', currentUser.uid, 'scheduledQuestions');
+    const schedCol = collection(db, 'users', currentUser.uid, SCHEDULED_COL);
     const docRef = await addDoc(schedCol, schedData);
     scheduledQuestions.push({ ...schedData, _docId: docRef.id });
     scheduledQuestions.sort((a, b) => (a.releaseDate || '').localeCompare(b.releaseDate || ''));
@@ -25705,7 +26524,7 @@ async function saveEditedSchedule() {
   }
 
   try {
-    const schedRef = doc(db, 'users', currentUser.uid, 'scheduledQuestions', editingScheduleId);
+    const schedRef = doc(db, 'users', currentUser.uid, SCHEDULED_COL, editingScheduleId);
     await updateDoc(schedRef, { releaseDate: newDate });
 
     const sq = scheduledQuestions.find(s => s._docId === editingScheduleId);
@@ -25724,7 +26543,7 @@ async function saveEditedSchedule() {
 function deleteScheduledQuestion(docId) {
   showConfirm('Delete Scheduled Question', 'Are you sure you want to remove this scheduled question?', async () => {
     try {
-      const schedRef = doc(db, 'users', currentUser.uid, 'scheduledQuestions', docId);
+      const schedRef = doc(db, 'users', currentUser.uid, SCHEDULED_COL, docId);
       await deleteDoc(schedRef);
       scheduledQuestions = scheduledQuestions.filter(s => s._docId !== docId);
       renderScheduledQuestions();
@@ -33093,6 +33912,12 @@ window.renderBulkTagsPreview = renderBulkTagsPreview;
 window.autoTagAllQuestions = autoTagAllQuestions;   // console / manual re-run
 window.autoTagStop = autoTagStop;
 window.renderFlashcardsPage = renderFlashcardsPage;
+// Learning gaps — the list, its practice sessions and the daily retry credits.
+window.renderGapsPage = renderGapsPage;
+window.lgPractiseGap = lgPractiseGap;
+window.lgGenerateForGap = lgGenerateForGap;
+window.lgMarkGotIt = lgMarkGotIt;
+window.lgRetry = lgRetry;
 window.fcToggleGap = fcToggleGap;
 window.fcClearGaps = fcClearGaps;
 window.fcBuildFromGaps = fcBuildFromGaps;
@@ -33183,7 +34008,6 @@ window.renderQuestionBank = renderQuestionBank;
 window.setBankView = setBankView;
 window.toggleBankTopicMenu = toggleBankTopicMenu;
 window.toggleBankTopic = toggleBankTopic;
-window.toggleBankTopicLevel = toggleBankTopicLevel;
 window.clearBankTopics = clearBankTopics;
 window.setBankSort = setBankSort;
 window.toggleBankPick = toggleBankPick;
@@ -33378,6 +34202,7 @@ window.saveEditedSchedule = saveEditedSchedule;
 window.deleteScheduledQuestion = deleteScheduledQuestion;
 // Topical Practice
 window.tpRenderTopics = tpRenderTopics;
+window.tpRestart = tpRestart;
 window.tpToggleTopic = tpToggleTopic;
 window.tpClearSelection = tpClearSelection;
 window.tpRemoveSelectedTopic = tpRemoveSelectedTopic;

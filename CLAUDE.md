@@ -77,6 +77,49 @@ and Ai-nstein all read it. It replaced the RPG hero doc the Science app used.
 - Writes coalesce (600 ms) and the class mirror publishes at 1500 ms — a photo
   answer marks every part at once and would otherwise be one write per part.
 
+## Learning gaps and the daily retry credits
+
+`lgState` (in `app.js`, search `LEARNING GAPS`) is the list of what one student
+does not understand yet — **named** weaknesses ("past perfect tense", "the word
+'reluctant'"), not topics. The mistake log records what went wrong on a
+particular question; this is the same evidence read as a list that outlives the
+question. Stored at `users/{uid}/{SETTINGS_COL}/{GAPS_DOC}`, and **not mirrored
+to the class collection**: a list of what a child cannot do is not a class
+statistic.
+
+- **`lgNoteFromParts` is the ONE hook**, and it is called from inside
+  `fcNoteMistakes` — the function every marking path already funnels its wrong
+  answers through. Do not add a second; a surface added later is covered free.
+- The list does three jobs and it is the **same list** for all three: it is shown
+  to the student, it **picks** the bank questions they are served
+  (`lgBankQuestionsFor`), and it **briefs the AI** when the bank has nothing left
+  (`lgBuildQuestion`, which goes through `buildBlocksFromAi` like every other AI
+  authoring path). A generated question is **never saved** — the bank is the
+  teacher's, and nothing unvetted belongs in it.
+- **The AI names the gap; the question's own tags are the fallback.** With the AI
+  off or the call failed, `_lgFallbackItems` files the mistake under the
+  question's tags or topic. The list must never simply stop filling. But an
+  **empty `items` array is a real answer** — the model is told to return one when
+  a slip shows no misunderstanding — so it is not overridden by the fallback.
+- **A gap is closed by the student, not the clock**: `LG_CLEAR_WINS` right in a
+  row (`lgNoteWin`, called from `recordCerPerformance` at the same ≥0.95
+  threshold `progressOnMarked` uses). One wrong answer **re-opens** it.
+- **Credits are `REGEN_DAILY_CREDITS` (30) a day, reset by calendar day**, spent
+  BEFORE the AI call so two quick taps cannot buy two questions for one credit,
+  and **refunded when the call fails**. `_lgRollCredits` must run on load or a
+  stale `dayKey` hands out one allowance and never another.
+- `_lgHostId` is the ONE place a gap key becomes an element id, and it is
+  injective on purpose — a bare strip of non-alphanumerics lets two gaps share a
+  host, and the second one's button then does nothing at all.
+- Run **`node tools/learning-gap-tests.mjs`** after touching any of it: a
+  mis-keyed gap, a credit that misses the rollover and a gap that cannot re-open
+  are all silent.
+
+Topic lists carry **no P3–P6 headings** — not the bank filter, the authoring
+`<select>`, the manage dialog or the student topic grid. An English topic is not
+owned by a year the way a Science one is. The level each topic is filed under is
+still live (it gates what a student may be served); it is simply not announced.
+
 ## Printing
 
 - **Printed / PDF worksheet answer boxes** are sized from the MODEL ANSWER by
@@ -419,11 +462,12 @@ reported in chat, to know whether the deploy actually went through.
 - After editing `app.js`, validate it:
   `cp app.js /tmp/c.mjs && node --check /tmp/c.mjs` (the `.mjs` copy makes Node
   parse it as a module, so `import` at the top is accepted).
-- Run the three harnesses after touching what they cover — every failure they
+- Run the four harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
   - `node tools/objective-tag-tests.mjs`
+  - `node tools/learning-gap-tests.mjs`
 
 ### Two CSS traps in `index.html`
 

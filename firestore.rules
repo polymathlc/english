@@ -38,6 +38,23 @@ service cloud.firestore {
       match /statsEn/{sid}          { allow read, write: if isSelf(uid); }
       match /workSessionsEn/{wid}   { allow read, write: if isSelf(uid); }
 
+      // Rules do NOT cascade into subcollections: the `allow read, write` on
+      // /users/{uid} above covers that DOCUMENT and nothing beneath it, and the
+      // recursive wildcard at the end of this block grants read only. So every
+      // subcollection the app WRITES needs a line here or the write is denied —
+      // silently, because all three of these are fire-and-forget.
+      //
+      // mistakes  — one record per wrong answer; what the revision cards and
+      //             the learning-gap list are both built from.
+      // flashcards— the generated revision decks.
+      // scheduledQuestions — the teacher's queued releases.
+      //
+      // The learning-gap list itself needs no line: it is a single document at
+      // settingsEn/learningGaps, already covered above.
+      match /mistakes/{mid}            { allow read, write: if isSelf(uid); }
+      match /flashcards/{fid}          { allow read, write: if isSelf(uid); }
+      match /scheduledQuestions/{sqid} { allow read, write: if isSelf(uid); }
+
       // An employee authors straight into the teacher's bank, so they need to
       // write there. Widen this only if you actually hire one.
       match /{document=**}          { allow read: if isSelf(uid); }
