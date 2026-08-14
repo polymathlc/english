@@ -35,8 +35,10 @@ const parts = slice('const QPART_NUM_RE =', 'function qPartLabel(', 'numeric par
   + slice('function qPartLabelFirst(blocks, block)', '\n}\n', 'label-first') + '\n}\n';
 const pb = slice('const PB_QLINE_RE =', '// ---- the dialog ---', 'passage builder parse');
 const cb = slice('const CB_LETTERS =', '// ---- the student\'s passage', 'cloze bank')
-  // cbAnswerKeyText sits below the DOM half, so it is taken on its own rather
-  // than dragging every drag-and-drop listener into a headless harness.
+  // _cbOptionsHtml is the ONE place a blank's drop-down list is worked out, and
+  // _cbSlotHtml renders it. Both are pure, so they come across on their own
+  // rather than dragging every drag-and-drop listener into a headless harness.
+  + slice('function _cbOptionsHtml(block', 'function cbStudentHtml(', 'cloze drop-down')
   + slice('// Every blank on the key', '\n}\n', 'cloze answer key') + '\n}\n';
 
 // The handful of things those sections lean on, copied verbatim from app.js.
@@ -65,7 +67,8 @@ function createBlock(type) {
 const M = new Function(preamble + parts + cb + pb +
   '\nreturn { qPartIsNum, qPartNormalize, qBlockOpensPart, qPartLabelFirst, _pbQStart, _pbParse, _pbParseKey, _pbPassageHtml,'
   + ' pbBuildBlocks, pbPartLetter, pbPartOverflow, _pbRelabelPassage,' +
-  ' cbBank, cbBankMap, _cbGrid, cbIntro, cbAnswerKeyText, _cbBlanks, _cbStart, cbHasBlanks, CB_LETTERS };')();
+  ' cbBank, cbBankMap, _cbGrid, cbIntro, cbAnswerKeyText, _cbBlanks, _cbStart, cbHasBlanks, CB_LETTERS,'
+  + ' _cbOptionsHtml, _cbSlotHtml };')();
 
 const cases = [];
 const test = (name, fn) => cases.push({ name, fn });
@@ -409,6 +412,75 @@ test('a block with no part never prints a label', () => {
 
 test('a malformed block list never throws', () => {
   [null, undefined, [], [null]].forEach(bs => M.qPartLabelFirst(bs, { type: 'mcq', part: '21' }));
+});
+
+// ── the blank's drop-down, and the words it must NOT offer ──────────────────
+// On a passage of any length the bank has scrolled off the top long before
+// blank (33), and a word you cannot see is a word you cannot drag. The
+// drop-down carries the list to the blank — and `_cbOptionsHtml` is the ONE
+// place it is worked out, so a word can never be offered in two blanks at once.
+
+const DROP = { type: 'clozebank', text: 'a [[has]] b [[could]] c [[when]]', extras: ['by', 'from'] };
+const optLetters = html => (html.match(/value="([A-Z])"/g) || []).map(m => m.slice(7, -1));
+
+test('a fresh blank offers the WHOLE bank', () => {
+  const h = M._cbOptionsHtml(DROP, '', null, false);
+  eq(optLetters(h), M.cbBank(DROP).map((w, i) => M.CB_LETTERS[i]), 'every bank word must be reachable from every blank');
+  ok(/<option value="">/.test(h), 'and an empty option, or a blank can never be un-answered');
+});
+
+test('a word used in ANOTHER blank is taken out of this one', () => {
+  // The whole ask: each word is used once, so once it is placed it must stop
+  // being offered anywhere else. Left in, two blanks can hold the same word and
+  // the bank strike-off and the drop-downs disagree with each other.
+  const map = M.cbBankMap(DROP);
+  const usedL = map.byWord['could'];
+  const h = M._cbOptionsHtml(DROP, '', new Set([usedL]), true);
+  ok(optLetters(h).indexOf(usedL) < 0, '"could" is still offered after being used: ' + h);
+  eq(optLetters(h).length, M.cbBank(DROP).length - 1);
+});
+
+test('a blank still offers the word IT is holding', () => {
+  // Otherwise the blank's own answer vanishes from its own list, the <select>
+  // falls back to the first option, and the student's answer changes by itself.
+  const map = M.cbBankMap(DROP);
+  const mine = map.byWord['has'];
+  const h = M._cbOptionsHtml(DROP, mine, new Set([mine]), true);
+  ok(optLetters(h).indexOf(mine) >= 0, 'the blank lost its own word: ' + h);
+  ok(new RegExp('value="' + mine + '" selected').test(h), 'and it must come back SELECTED: ' + h);
+});
+
+test('with "each word once" switched off nothing is excluded', () => {
+  const map = M.cbBankMap(DROP);
+  const h = M._cbOptionsHtml(DROP, '', new Set([map.byWord['could'], map.byWord['has']]), false);
+  eq(optLetters(h).length, M.cbBank(DROP).length, 'striking words out would be a lie when the bank allows re-use');
+});
+
+test('the options carry the letter AND the word, as the bank prints them', () => {
+  const h = M._cbOptionsHtml(DROP, '', null, true);
+  ok(/\(A\) [a-z]/.test(h), 'a bare letter is unreadable away from the bank: ' + h);
+});
+
+test('a malformed block never throws and offers nothing', () => {
+  [null, undefined, {}, { type: 'clozebank' }].forEach(b => {
+    const h = M._cbOptionsHtml(b, '', null, true);
+    eq(optLetters(h), [], 'a bank with no words must offer no words');
+  });
+});
+
+test('every blank renders ONE drop-down, numbered as the paper numbers it', () => {
+  const h = M._cbSlotHtml(0, 26, 'blk1', DROP);
+  eq((h.match(/<select/g) || []).length, 1);
+  ok(/class="cb-pick"/.test(h));
+  ok(/\(26\)/.test(h), 'the number is printed under the blank');
+  ok(/aria-label="Blank 26"/.test(h), 'and named for a screen reader');
+});
+
+test('the slot keeps everything drag-and-drop needs', () => {
+  // The drop-down is an ADDITION. Dragging still works for the blanks near the
+  // top, and _cbPlace / _cbUsed both key off these attributes.
+  const h = M._cbSlotHtml(3, 29, 'blk1', DROP);
+  ok(/class="cb-slot"/.test(h) && /data-cb-slot="3"/.test(h) && /data-cb-block="blk1"/.test(h), h);
 });
 
 // ── runner ───────────────────────────────────────────────────────────────────
