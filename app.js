@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.10.0';
+const APP_VERSION = 'v1.11.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -3250,6 +3250,13 @@ function createBlock(type) {
       block.once = true;        // each word used only once
       block.sortBank = true;    // alphabetical, so the order gives nothing away
       break;
+    case 'editpassage':
+      // The same [[markup]] once more, but an item carries the PRINTED (wrong)
+      // word and its correction(s), split on `>>`: `[[reseev>>receive]]`.
+      block.text = '';
+      block.startNum = ED_START_DEFAULT;
+      block.intro = '';
+      break;
     case 'clozeopen':
       // The same [[markup]] again, but a blank stores EVERY word it accepts,
       // pipe-separated — `[[bring|draw|pull]]`. There is no bank to pick from,
@@ -4400,6 +4407,7 @@ function renderBlocks() {
       case 'fillblank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔲'; badgeLabel = 'Fill in the Blanks'; break;
       case 'clozebank':   badgeClass = 'plainanswer-badge'; badgeIcon = '🔤'; badgeLabel = 'Comprehension Cloze (word bank)'; break;
       case 'clozeopen':   badgeClass = 'plainanswer-badge'; badgeIcon = '📝'; badgeLabel = 'Comprehension Cloze (no word bank)'; break;
+      case 'editpassage': badgeClass = 'plainanswer-badge'; badgeIcon = '✏️'; badgeLabel = 'Editing Passage'; break;
       case 'synthesis':   badgeClass = 'plainanswer-badge'; badgeIcon = '✍️'; badgeLabel = 'Synthesis & Transformation'; break;
       case 'workingSpace':badgeClass = 'plainanswer-badge'; badgeIcon = block.annotate ? '✍️' : '🧮'; badgeLabel = block.annotate ? 'Annotation Working Area' : 'Working Space'; break;
       case 'commonMistake':badgeClass = 'explanation-badge'; badgeIcon = '⚠️'; badgeLabel = 'Common Mistake'; break;
@@ -5530,6 +5538,32 @@ function renderImportedBlockEditorBody(block) {
           <div id="coPrev_${id}" class="cb-ed-prev">${_coEditorPreviewHtml(block)}</div>
         </div>`;
     }
+    case 'editpassage': {
+      const its = _edItems(block);
+      const st2 = _edStart(block);
+      const todo = its.filter(r => !_edItem(r).answers.length).length;
+      return `
+        <div class="block-body">
+          <textarea id="edText_${id}" class="form-input" rows="9" placeholder="Paste the whole passage, then click each WRONG word below — e.g.  It's the first place in Singapore to [[reseev>>receive]] such an honour, and it was [[choose>>chosen]] for its historical importance."
+                    style="width:100%;box-sizing:border-box;font-family:inherit;font-size:0.92rem;line-height:1.7;resize:vertical;"
+                    oninput="saveBlockField('${id}','text',this.value); edSyncEditor('${id}')">${escapeHtml(block.text || '')}</textarea>
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:10px 0 6px;line-height:1.55;">👆 Click each <strong>wrong</strong> word below to mark it (click again to undo). The wrong word <strong>stays on the page</strong> — the student is correcting it, not filling a gap — so write the correction after <code>&gt;&gt;</code>: <code>[[reseev&gt;&gt;receive]]</code>. Add other acceptable forms with <code>|</code>.</div>
+          <div id="edChips_${id}" class="fb-chip-wrap">${_fbChipsHtml(id, block.text || '', 'edToggleToken')}</div>
+
+          <div class="cb-ed-row">
+            <label class="cb-ed-field" style="max-width:190px;">First item is numbered
+              <input class="form-input" type="number" min="1" max="999" value="${st2}"
+                     oninput="saveBlockNum('${id}','startNum',this.value,1,999); edSyncEditor('${id}')"></label>
+            <button type="button" class="btn btn-outline" style="padding:6px 14px;font-size:0.82rem;"
+                    onclick="edAiCorrections('${id}', this)"
+                    title="Read the passage and write the correction for every word you have marked">✨ Write the corrections</button>
+          </div>
+          ${todo ? `<div class="cb-ed-warn">⚠ ${todo} of ${its.length} marked word${its.length === 1 ? '' : 's'} ${todo === 1 ? 'has' : 'have'} no correction yet. The AI marker will still judge them against the passage, but the printed answer key will have a gap.</div>` : ''}
+
+          <div style="font-size:0.78rem;color:var(--text-muted);margin:14px 0 4px;">Student preview — <span id="edCount_${id}">${its.length ? `${its.length} item${its.length === 1 ? '' : 's'} (${st2}–${st2 + its.length - 1})` : 'no items yet'}</span>:</div>
+          <div id="edPrev_${id}" class="cb-ed-prev">${_edEditorPreviewHtml(block)}</div>
+        </div>`;
+    }
     case 'workingSpace':
       return `
         <div class="block-body">
@@ -5659,6 +5693,10 @@ function renderImportedBlockStudent(block, q) {
       return coHasBlanks(block)
         ? `<div style="margin:10px 0;">${_coEditorPreviewHtml(block)}</div>`
         : `<div class="co-passage" style="margin:10px 0;">${escapeHtml(stripHtml(block.text || ''))}</div>`;
+    case 'editpassage':
+      return edHasItems(block)
+        ? `<div style="margin:10px 0;">${_edEditorPreviewHtml(block)}</div>`
+        : `<div class="ed-passage" style="margin:10px 0;">${escapeHtml(stripHtml(block.text || ''))}</div>`;
     case 'commonMistake': {
       const c = COMMON_MISTAKE_COLORS[block.color] || COMMON_MISTAKE_COLORS.teal;
       return `<div style="margin:10px 0;border-left:4px solid ${c};background:${c}14;padding:8px 12px;border-radius:6px;">
@@ -8923,6 +8961,40 @@ function buildBlocksFromAi(data) {
       } else if (t === 'explanation') {
         const expl = stripBrackets(b.text || b.content);
         if (expl) blocks.push({ id: generateBlockId(), type: 'explanation', content: expl });
+      } else if (t === 'clozebank' || t === 'clozewordbank') {
+        // The drag-and-drop cloze: one passage, numbered blanks, and a lettered
+        // word bank above it. The bank is DERIVED from the answers plus the
+        // distractors (cbBank), so the model supplies only "extras" and a bank
+        // missing one of its own answers stays impossible to build.
+        const passage = String(b.text || b.passage || b.content || '');
+        if (/\[\[[\s\S]+?\]\]/.test(passage)) {
+          const st = Number(b.startNum != null ? b.startNum : b.start);
+          blocks.push({
+            id: generateBlockId(), type: 'clozebank',
+            text: passage,
+            // Flat array of strings: Firestore rejects a nested array, and
+            // _firestoreSafeQuestion only rescues the table block's rows.
+            extras: (Array.isArray(b.extras) ? b.extras : []).map(x => stripBrackets(String(x == null ? '' : x))).filter(Boolean),
+            startNum: (isFinite(st) && st >= 1 && st <= 999) ? Math.round(st) : CB_START_DEFAULT,
+            intro: stripBrackets(b.intro || ''),
+            once: b.once !== false,
+            sortBank: b.sortBank !== false
+          });
+        }
+      } else if (t === 'editpassage' || t === 'editing') {
+        // The editing passage. Raw, like the clozes: stripBrackets would erase
+        // every item and leave a passage of uncorrected errors that reads as
+        // finished prose.
+        const passage = String(b.text || b.passage || b.content || '');
+        if (/\[\[[\s\S]+?\]\]/.test(passage)) {
+          const st = Number(b.startNum != null ? b.startNum : b.start);
+          blocks.push({
+            id: generateBlockId(), type: 'editpassage',
+            text: passage,
+            startNum: (isFinite(st) && st >= 1 && st <= 999) ? Math.round(st) : ED_START_DEFAULT,
+            intro: stripBrackets(b.intro || '')
+          });
+        }
       } else if (t === 'clozeopen' || t === 'cloze') {
         // The open cloze: one passage, numbered blanks, no word bank.
         //
@@ -9547,7 +9619,16 @@ function _partsPromptRules() {
     `    {"type":"clozeopen","startNum":46,"text":"Hawker culture is one of Singapore's most treasured traditions. Dishes like chicken rice, laksa and roti prata [[bring|draw|pull]] people from all backgrounds together, creating a strong [[sense|feeling]] of community."}\n` +
     `  "text" is the passage transcribed EXACTLY as printed, word for word and punctuation for punctuation, with each numbered blank replaced by [[answers]] IN PLACE. Do NOT keep the printed "(46)" markers in the text — the numbering comes from "startNum", which is the number of the FIRST blank on the page.\n` +
     `  Inside each [[ ]] put EVERY word a marker should accept in that blank, separated by | , with the single best word FIRST — for example [[bring|draw|pull]]. You are working the answers out from the passage yourself, so think about what actually fits: a cloze blank almost always has SEVERAL correct words, and listing only one marks most of a class wrong for being right in a different way. Give 2 to 4 words per blank where they genuinely fit, and one only where nothing else does. Each must be in the exact form the sentence needs (the right tense, number and part of speech).\n` +
-    `  If the passage DOES print a list of words to choose from above it, that is a different exercise — do not use "clozeopen" for it.\n` +
+    `  If the passage DOES print a list of words to choose from above it, that is a different exercise — do not use "clozeopen" for it; use "clozebank" below.\n` +
+    `- COMPREHENSION CLOZE WITH A WORD BANK — the same thing but WITH a boxed list of words above the passage, lettered (A), (B), (C)…, usually headed "EACH WORD CAN BE USED ONLY ONCE". Use ONE {"type":"clozebank"} block for the whole thing:\n` +
+    `    {"type":"clozebank","startNum":26,"text":"Reading [[has]] been important for thousands of years. At first, only a few educated people [[could]] understand these symbols.","extras":["as","at","by","over","through","while","until"]}\n` +
+    `  "text" is the passage transcribed exactly, each numbered blank replaced by [[the one word from the printed list that belongs there]] — taken from the list, never invented, and never more than one word per blank. Do NOT keep the printed "(26)" markers; the numbering comes from "startNum", the number of the FIRST blank.\n` +
+    `  "extras" is every word printed in the box that does NOT go into any blank — the distractors. Copy them WITHOUT their letters; the letters are re-issued from the finished list. Never put a blank's own answer in "extras".\n` +
+    `  Work the whole set out together: the list is closed and each word is used once, so a word you have already placed cannot be used again, and every blank must end up with a word.\n` +
+    `- EDITING PASSAGE — a passage (often a diary entry, letter or notice) in which about ten words are WRONG, each underlined or circled with a numbered box beside or under it for the correction. Nothing is missing from this passage: the errors are misspellings ("reseev" for receive) and wrong grammatical forms ("choose" for chosen). Use ONE {"type":"editpassage"} block:\n` +
+    `    {"type":"editpassage","startNum":36,"text":"It's the first place in Singapore to [[reseev>>receive]] such an honour, and it was [[choose>>chosen]] for its historical importance."}\n` +
+    `  "text" is the passage transcribed exactly, INCLUDING the wrong words — they stay on the page, because the student is correcting them rather than filling a gap. Write each marked word as [[the word exactly as printed>>the correct word]]. Add other acceptable forms after a | , but usually there is only one right answer. Do NOT keep the printed "(36)" markers; the numbering comes from "startNum".\n` +
+    `  Copy the wrong word EXACTLY as the paper prints it, misspelling and all — reproducing it correctly destroys the question. Mark ONLY the words the paper has underlined or boxed; a word that is merely unusual is not an error.\n` +
     `- Give EACH part its own answer block ("answer" or "plainanswer") directly under the text block that asks it, so every part has its own model answer.\n` +
     `- EXPLANATIONS follow the parts: a question with NO parts finishes with ONE "explanation" block; a question WITH parts gets ONE explanation block PER PART, placed directly after that part's own answer block and explaining ONLY that part's question and answer. Never write one explanation covering several parts, and never put an explanation about part (b) underneath part (a).\n`;
 }
@@ -10988,7 +11069,7 @@ function extractQuestionSearchText(q) {
       parts.push(stripHtmlToText(block.answer));
     } else if (block.type === 'answerKey') {
       parts.push(stripHtmlToText(block.text));
-    } else if (block.type === 'fillblank' || block.type === 'clozebank' || block.type === 'clozeopen') {
+    } else if (block.type === 'fillblank' || block.type === 'clozebank' || block.type === 'clozeopen' || block.type === 'editpassage') {
       // [[answer]] markers become plain words so the blanked answers are searchable too
       parts.push(stripHtmlToText(String(block.text || '').replace(/\[\[|\]\]/g, ' ').replace(/\|/g, ' ')));
     }
@@ -11660,6 +11741,9 @@ function getQuestionPreview(q) {
     }
     if (block.type === 'clozeopen' && (block.text || '').trim()) {
       return clean('Cloze: ' + _fbParse(block.text).map(p => p.type === 'blank' ? '____' : p.text).join('')).substring(0, 150);
+    }
+    if (block.type === 'editpassage' && (block.text || '').trim()) {
+      return clean('Editing: ' + _fbParse(block.text).map(p => p.type === 'blank' ? _edItem(p.answer).wrong : p.text).join('')).substring(0, 150);
     }
   }
   return 'No text content';
@@ -13909,6 +13993,15 @@ function doPrintWorksheetOpen() {
           if (coHasBlanks(block)) {
             qHtml += coPrintHtml(block);
             _pushAnswerKeySection(qSections, 'Comprehension cloze', coAnswerKeyText(block), bPart);
+          } else {
+            qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
+          }
+          break;
+        }
+        case 'editpassage': {
+          if (edHasItems(block)) {
+            qHtml += edPrintHtml(block);
+            _pushAnswerKeySection(qSections, 'Editing', edAnswerKeyText(block), bPart);
           } else {
             qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
           }
@@ -19678,6 +19771,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   const fbBlocks = [];
   const cbBlocks = [];
   const coBlocks = [];
+  const edBlocks = [];
   const isAnnot = !!(q && q.annotation);
   let annotCount = 0;
   // Blocks are grouped into visual PARTS: a run of question content (text,
@@ -19837,6 +19931,19 @@ function buildOpenBody(q, containerSel, markCfg) {
         addAnswer(coStudentHtml(block, containerSel, oidxs));
         break;
       }
+      case 'editpassage': {
+        const raws = _edItems(block);
+        if (!raws.length) { add(`<div class="ed-passage">${escapeHtml(stripHtml(block.text || ''))}</div>`); break; }
+        const start = _edStart(block);
+        const oidxs = raws.map((raw, i) => {
+          const oidx = items.length;
+          items.push({ label: [pOf(block), 'Correction ' + (start + i)].filter(Boolean).join(' '), model: _edItem(raw).answers.join(' / '), block, field: 'text' });
+          return oidx;
+        });
+        edBlocks.push({ blockId: block.id, oidxs, items: raws, startNum: start });
+        addAnswer(edStudentHtml(block, containerSel, oidxs));
+        break;
+      }
       case 'explanation':
       case 'widget':
         break; // hidden until the student has answered (see showExplanation)
@@ -19861,7 +19968,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   // A cloze is answered by dragging, never by writing on paper, so its blanks
   // count with the fill-in-the-blank ones: both keep the "photo of your written
   // work" bar away from a question that has nothing to photograph.
-  const fbItemCount = fbBlocks.concat(cbBlocks, coBlocks).reduce((s, b) => s + b.oidxs.length, 0);
+  const fbItemCount = fbBlocks.concat(cbBlocks, coBlocks, edBlocks).reduce((s, b) => s + b.oidxs.length, 0);
   if (annotCount) {
     // Each annotation pad carries its own Check / AI Check bar; just add the
     // how-to hint once at the end instead of the photo bar / "nothing" note.
@@ -19879,6 +19986,7 @@ function buildOpenBody(q, containerSel, markCfg) {
   _fbStore[containerSel] = fbBlocks;
   _cbStore[containerSel] = cbBlocks;
   _coStore[containerSel] = coBlocks;
+  _edStore[containerSel] = edBlocks;
   _openQStore[containerSel] = q;
   _openSurfaceCfg[containerSel] = markCfg || {};
   _openPartResults[containerSel] = {};
@@ -21109,9 +21217,17 @@ function coIntro(block) {
 }
 
 // The passage's own wording, escaped, with its paragraphs kept. A run of blank
-// lines collapses to ONE: the passage is set at line-height 3.1 so the numbers
-// have somewhere to sit, which turns two <br>s into six lines of nothing.
-function _coText(t) { return escapeHtmlKeepLines(String(t == null ? '' : t).replace(/\n{2,}/g, '\n')); }
+// lines collapses to ONE: these passages are set at a tall line-height so the
+// blanks have room, which turns two <br>s into six lines of nothing.
+//
+// Deliberately NOT escapeHtmlKeepLines: that helper trims every line, and the
+// passage is split at each blank, so the text resuming after one always begins
+// with the space that separated it from the word before. Trimmed away, the
+// passage reads "…brought people" with the blank jammed against the next word —
+// on every blank, in all three renderings and on the printed page.
+function _coText(t) {
+  return escapeHtml(String(t == null ? '' : t).replace(/\n{2,}/g, '\n')).replace(/\n/g, '<br>');
+}
 
 // ---- the student's passage --------------------------------------------------
 // EVERY blank is the same width, and that is not a shortcut — it is the point.
@@ -21391,6 +21507,363 @@ async function coAiAlternatives(id, btn) {
     showToast(touched ? `Added alternatives to ${touched} blank${touched === 1 ? '' : 's'}` : 'No new alternatives to add', touched ? 'success' : 'info');
   } catch (e) {
     console.error('cloze alternatives', e);
+    showToast('AI error: ' + (e && e.message ? e.message : e), 'error');
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+}
+
+// =====================================================================
+// ✏️ EDITING PASSAGE — the underlined word is WRONG; write the correction
+// =====================================================================
+// The other passage exercise on the paper, and the one that reads backwards
+// from a cloze: nothing is missing. Every word is there, and about ten of them
+// are wrong — "reseev" for receive, "choose" for chosen, "tropickle" for
+// tropical — each underlined with a numbered box beside it for the correction.
+//
+// It is the cloze family's fourth member and it is NOT a variant of one, for the
+// same reason `clozebank` and `clozeopen` are not variants of each other: what
+// "correct" means is different. A cloze blank has several right words; an
+// editing item has ONE properly spelled, properly formed word, and the student's
+// job is to produce exactly it. Marking one by the other's rules is how a class
+// gets told "tropicle" is fine because it means the right thing.
+//
+// Three things hold it together:
+//
+//  • **An item stores the printed word AND its corrections**, in the same
+//    [[markup]] as the rest of the family, split on `>>`:
+//    `[[reseev>>receive]]`, or `[[choose>>chosen|was chosen]]` where the edit
+//    really does have more than one right form. `_edItem` is the ONE place that
+//    string is taken apart.
+//  • **The printed word is never a correct answer.** It is the error being
+//    corrected, so copying it out is decided HERE, before the AI is asked — a
+//    model shown "reseev" against a passage about receiving an honour can and
+//    does talk itself into accepting it.
+//  • **Everything else goes to the AI in ONE call carrying the whole passage**,
+//    exactly as the open cloze does, because a correction is only right in the
+//    sentence it belongs to: "begin" → "began" is right here and wrong in a
+//    sentence written in the present tense.
+const ED_START_DEFAULT = 36;    // where this section usually starts on the paper
+const ED_SEP = '>>';
+const ED_MAX_ITEMS = 60;
+const _edStore = {};            // containerSel -> [{ blockId, oidxs, items, startNum }]
+
+function edIsBlock(b) { return !!b && b.type === 'editpassage'; }
+// The ONE place `reseev>>receive|recieve` is taken apart. No `>>` at all means
+// the author has marked the wrong word but not yet typed its correction — which
+// is exactly what clicking a word in the editor produces — so the bracketed text
+// is the PRINTED word and the answer list is empty. Reading it the other way
+// round would put the correct spelling on the page for the student to copy.
+function _edItem(raw) {
+  const s = String(raw == null ? '' : raw);
+  const at = s.indexOf(ED_SEP);
+  if (at < 0) return { wrong: s.trim(), answers: [] };
+  return { wrong: s.slice(0, at).trim(), answers: coAlts(s.slice(at + ED_SEP.length)) };
+}
+function _edItems(block) { return _fbParse(block && block.text).filter(p => p.type === 'blank').map(p => p.answer || '').slice(0, ED_MAX_ITEMS); }
+function edHasItems(block) { return edIsBlock(block) && _edItems(block).length > 0; }
+function _edStart(block) {
+  const n = parseInt(block && block.startNum, 10);
+  return (isFinite(n) && n >= 1 && n <= 999) ? n : ED_START_DEFAULT;
+}
+// Marked without the AI: the accepted list, and the one answer that is always
+// wrong however plausible it looks — the word already printed on the page.
+function edAccepts(raw, word) {
+  const it = _edItem(raw);
+  const w = _coNorm(word);
+  if (!w) return false;
+  if (it.wrong && _coNorm(it.wrong) === w) return false;   // copying the error out is not an edit
+  return it.answers.some(a => _coNorm(a) === w);
+}
+function edIsTheError(raw, word) {
+  const it = _edItem(raw);
+  const w = _coNorm(word);
+  return !!w && !!it.wrong && _coNorm(it.wrong) === w;
+}
+function edIntro(block) {
+  const own = String((block && block.intro) || '').trim();
+  if (own) return own;
+  const n = _edItems(block).length;
+  if (!n) return '';
+  const a = _edStart(block), b = a + n - 1;
+  return `The underlined word${n === 1 ? '' : 's'} in the passage below ${n === 1 ? 'is' : 'are'} wrong. Write the correct word in the box beside ${n === 1 ? 'it' : 'each one'}, numbered ${a}${n === 1 ? '' : ' to ' + b}.`;
+}
+
+// ---- the student's passage --------------------------------------------------
+// One width for every box, for the open cloze's reason: a box wider than its
+// neighbours tells the student how long the word they cannot spell is.
+function _edSlotWidth(block) {
+  const longest = _edItems(block).reduce((m, raw) => _edItem(raw).answers.reduce((n, a) => Math.max(n, a.length), m), 6);
+  return Math.max(11, Math.min(26, longest + 4));
+}
+function _edSlotHtml(oidx, num, wrong, w) {
+  // The error stays on the page, underlined as the paper underlines it — the
+  // student is correcting something, not filling a gap. An item with nothing
+  // printed is just a numbered box, which is how the paper sets the odd one out.
+  //
+  // The number sits to the LEFT of the box, inline, exactly where the paper
+  // prints it — and not underneath as the clozes have it. A cloze blank is a
+  // thin rule with room under it; this box has a border and a height, so a
+  // number hung below it lands in the middle of the next line of the passage.
+  return `<span class="ed-item">${wrong ? `<span class="ed-wrong">${escapeHtml(wrong)}</span>` : ''}<span class="ed-num">(${num})</span><input class="ed-input" type="text" data-oidx="${oidx}"
+      autocomplete="off" autocapitalize="off" spellcheck="false" style="width:${w}ch;"
+      aria-label="Correction ${num}"></span>`;
+}
+function edStudentHtml(block, containerSel, oidxs) {
+  const parts = _fbParse(block.text || '');
+  const start = _edStart(block);
+  const raws = _edItems(block);
+  const w = _edSlotWidth(block);
+  let k = 0;
+  const body = parts.map(p => {
+    if (p.type !== 'blank') return _coText(p.text);
+    const i = k++;
+    return i < oidxs.length ? _edSlotHtml(oidxs[i], start + i, _edItem(raws[i]).wrong, w) : '';
+  }).join('');
+  const intro = edIntro(block);
+  const n = oidxs.length;
+  return `<div class="ed-wrap" data-ed-wrap="${escapeHtml(block.id)}">
+      ${intro ? `<div class="ed-intro">${escapeHtml(intro)}</div>` : ''}
+      <div class="ed-passage">${body}</div>
+      <div class="ed-actions">
+        <button type="button" class="btn btn-check" data-ed-check="${containerSel}" data-ed-blk="${escapeHtml(block.id)}">✓ Check all ${n} correction${n === 1 ? '' : 's'}</button>
+        <button type="button" class="btn btn-ghost" data-ed-clear="${containerSel}" data-ed-blk="${escapeHtml(block.id)}">↺ Clear all</button>
+        <span class="ed-hint">Write the correct word beside each underlined one, then check them all at once.</span>
+      </div>
+      <div class="ed-feedback" data-ed-fb="${escapeHtml(block.id)}"></div>
+    </div>`;
+}
+// The passage as the MARKER sees it — with the errors still in it, each followed
+// by its numbered box. A correction is only right in the sentence it belongs to:
+// "begin" → "began" is right here and wrong in a passage written in the present.
+function edMarkPassage(block, rows) {
+  let k = 0;
+  return _fbParse(block && block.text).map(p => {
+    if (p.type !== 'blank') return p.text;
+    const it = _edItem(p.answer);
+    const n = rows[k] ? rows[k].num : k + 1;
+    k++;
+    return ' ' + (it.wrong ? it.wrong + ' ' : '') + '___(' + n + ')___ ';
+  }).join('').replace(/\s+/g, ' ').trim();
+}
+
+// ---- marking ----------------------------------------------------------------
+function _edResetWrap(wrap) {
+  if (!wrap) return;
+  wrap.querySelectorAll('.ed-input').forEach(el => { el.value = ''; el.disabled = false; });
+  wrap.querySelectorAll('.ed-item').forEach(s => s.classList.remove('right', 'wrong'));
+  const fb = wrap.querySelector('[data-ed-fb]'); if (fb) fb.innerHTML = '';
+}
+function edClearAll(containerSel, blockId) {
+  const c = document.querySelector(containerSel); if (!c) return;
+  _edResetWrap(c.querySelector('[data-ed-wrap="' + blockId + '"]'));
+}
+async function edCheck(containerSel, blockId, btn) {
+  const c = document.querySelector(containerSel); if (!c) return;
+  const store = (_edStore[containerSel] || []).find(x => x.blockId === blockId); if (!store) return;
+  const wrap = c.querySelector('[data-ed-wrap="' + blockId + '"]'); if (!wrap) return;
+  const q = _openQStore[containerSel];
+  const block = ((q && q.blocks) || []).find(b => b && b.id === blockId);
+  const fb = wrap.querySelector('[data-ed-fb="' + blockId + '"]');
+  const rows = store.oidxs.map((oidx, i) => {
+    const el = wrap.querySelector('.ed-input[data-oidx="' + oidx + '"]');
+    return { oidx, i, el, num: store.startNum + i, raw: store.items[i] || '', student: el ? el.value.trim() : '' };
+  });
+  if (rows.every(r => !r.student)) { showToast('Write at least one correction first', 'info'); return; }
+
+  const pending = [];
+  rows.forEach(r => {
+    if (!r.student) { r.verdict = 'incorrect'; return; }
+    // Decided here, never sent: the word already printed on the page is the
+    // error being corrected, and a model shown it against a passage that reads
+    // perfectly around it can talk itself into accepting it.
+    if (edIsTheError(r.raw, r.student)) { r.verdict = 'incorrect'; r.why = 'That is the word you had to correct.'; return; }
+    if (edAccepts(r.raw, r.student)) { r.verdict = 'correct'; return; }
+    pending.push(r);
+  });
+
+  if (pending.length && window.__aiReady && window.__aiReady()) {
+    const orig = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = 'Checking…'; }
+    if (fb) fb.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">🤖 Checking your corrections…</span>';
+    try {
+      const passage = edMarkPassage(block, rows);
+      const list = pending.map(r => {
+        const it = _edItem(r.raw);
+        return `${r.num}. printed="${it.wrong}" accepted=[${it.answers.map(a => '"' + a + '"').join(', ')}] student="${r.student}"`;
+      }).join('\n');
+      const prompt =
+        `You are marking the EDITING section of a Singapore primary-school English paper. ` +
+        `${_markingPreamble(q && q.markingGuide, q && q.topic)}\n` +
+        `Every numbered item is a word PRINTED in the passage that is WRONG — misspelt, or the wrong grammatical form — and the student has written what they think the correct word is.\n` +
+        `Here is the whole passage, with each error followed by its numbered box:\n"${passage}"\n\n` +
+        `For EACH item below, mark "correct" only when the student's word is BOTH spelled correctly AND the right word in that exact position in the passage — the right tense, number and part of speech for the sentence around it.\n` +
+        `The "accepted" list is a guide, not the complete set: a correctly spelled, grammatically right word that is not on it is still correct. ` +
+        `Mark "incorrect" when the word is still misspelt, when it is the wrong form, when it changes the meaning, when it is simply the printed word copied out again, or when it is blank. ` +
+        `Unlike a cloze, this section is testing spelling and grammar, so do NOT accept a near-miss spelling — the whole point is the exact word.\n` +
+        `Give a "why" of at most 12 words for each, addressed to the student.\n` +
+        `Return ONLY JSON: {"items":[{"n":${store.startNum},"verdict":"correct","why":"..."}]}\n${list}`;
+      const raw = await askGemini(prompt, { maxOutputTokens: 400 + pending.length * 60, temperature: 0.1, json: true });
+      const parsed = _parseAIJson(raw);
+      const arr = Array.isArray(parsed) ? parsed : ((parsed && parsed.items) || []);
+      const byNum = {};
+      pending.forEach(r => { byNum[r.num] = r; });
+      arr.forEach(v => {
+        const r = v && byNum[Number(v.n)];
+        if (!r) return;
+        r.verdict = String(v.verdict || '').toLowerCase() === 'correct' ? 'correct' : 'incorrect';
+        r.why = String(v.why || '').trim();
+      });
+    } catch (e) { console.warn('editing passage AI mark', e); }
+    if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+  }
+
+  let correct = 0;
+  const wrong = [];
+  rows.forEach(r => {
+    if (!r.verdict) r.verdict = 'incorrect';
+    const ok = r.verdict === 'correct';
+    if (ok) correct++; else wrong.push(r);
+    if (r.el) r.el.disabled = true;
+    const item = r.el && r.el.closest('.ed-item');
+    if (item) { item.classList.toggle('right', ok); item.classList.toggle('wrong', !ok); }
+    _setPartResult(containerSel, 'open:' + r.oidx, r.verdict, ok ? 1 : 0, _edItem(r.raw).answers.join(' / '), r.student);
+  });
+  if (fb) {
+    fb.innerHTML = `<span style="font-weight:700;color:${correct === rows.length ? 'var(--primary)' : 'var(--accent-orange)'};">${correct} / ${rows.length} correct</span>`
+      + (wrong.length
+        ? `<div class="ed-fb-list">${wrong.map(r => {
+            const it = _edItem(r.raw);
+            return `<span><b>${r.num}.</b> ${it.wrong ? `<span class="ed-fb-was">${escapeHtml(it.wrong)}</span> → ` : ''}${escapeHtml(it.answers[0] || '—')}` +
+              `${it.answers.length > 1 ? `<span class="ed-fb-alt"> or ${escapeHtml(it.answers.slice(1).join(', '))}</span>` : ''}` +
+              `${r.why ? `<span class="ed-fb-why"> — ${escapeHtml(r.why)}</span>` : ''}</span>`;
+          }).join('')}</div>`
+        : ' 🎉');
+  }
+  _checkAllPartsMarked(containerSel);
+}
+document.addEventListener('click', function (e) {
+  const chk = e.target.closest && e.target.closest('[data-ed-check]');
+  if (chk) { e.preventDefault(); edCheck(chk.getAttribute('data-ed-check'), chk.getAttribute('data-ed-blk'), chk); return; }
+  const clr = e.target.closest && e.target.closest('[data-ed-clear]');
+  if (clr) { e.preventDefault(); edClearAll(clr.getAttribute('data-ed-clear'), clr.getAttribute('data-ed-blk')); }
+});
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Enter' || !e.target.classList || !e.target.classList.contains('ed-input')) return;
+  e.preventDefault();
+  const wrap = e.target.closest('.ed-wrap'); if (!wrap) return;
+  const all = Array.from(wrap.querySelectorAll('.ed-input')).filter(x => !x.disabled);
+  const next = all[all.indexOf(e.target) + 1];
+  if (next) { next.focus(); next.select(); }
+});
+
+// ---- on PAPER, and on the key -----------------------------------------------
+function edPrintHtml(block) {
+  const parts = _fbParse(block && block.text);
+  if (!parts.length) return '';
+  const start = _edStart(block);
+  let k = 0;
+  const body = parts.map(p => {
+    if (p.type !== 'blank') return _coText(p.text);
+    const it = _edItem(p.answer);
+    const n = start + (k++);
+    // The error PRINTS — it is the question. Only the correction is left blank.
+    return `<span class="print-ed-item">${it.wrong ? `<u>${escapeHtml(it.wrong)}</u> ` : ''}<span class="print-ed-num">(${n})</span><span class="print-ed-box">&nbsp;</span></span>`;
+  }).join('');
+  const intro = edIntro(block);
+  return (intro ? `<div class="print-cb-intro">${escapeHtml(intro)}</div>` : '')
+    + `<div class="print-text-block print-cb-passage">${body}</div>`;
+}
+function edAnswerKeyText(block) {
+  const start = _edStart(block);
+  const rows = _edItems(block).map((raw, i) => {
+    const it = _edItem(raw);
+    return `${start + i}. ${it.wrong ? it.wrong + ' → ' : ''}${it.answers[0] || '—'}${it.answers.length > 1 ? ' (or ' + it.answers.slice(1).join(', ') + ')' : ''}`;
+  });
+  return rows.length ? rows.join('   ') : '';
+}
+
+// ---- the editor -------------------------------------------------------------
+function _edEditorPreviewHtml(block) {
+  const parts = _fbParse(block && block.text);
+  if (!parts.length) return '<span style="color:var(--text-muted);font-size:0.82rem;">Paste the passage above, then click each wrong word.</span>';
+  const start = _edStart(block);
+  let k = 0;
+  const body = parts.map(p => {
+    if (p.type !== 'blank') return _coText(p.text);
+    const it = _edItem(p.answer);
+    const n = start + (k++);
+    return `<span class="ed-item static">${it.wrong ? `<span class="ed-wrong">${escapeHtml(it.wrong)}</span>` : ''}` +
+      `<span class="ed-num">(${n})</span><span class="ed-fill${it.answers.length ? '' : ' todo'}">${escapeHtml(it.answers[0] || 'no correction yet')}` +
+      `${it.answers.length > 1 ? `<span class="ed-alt" title="${escapeHtml(it.answers.slice(1).join(', '))}">+${it.answers.length - 1}</span>` : ''}` +
+      `</span></span>`;
+  }).join('');
+  const intro = edIntro(block);
+  return (intro ? `<div class="ed-intro">${escapeHtml(intro)}</div>` : '') + `<div class="ed-passage">${body}</div>`;
+}
+function edSyncEditor(id) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  const c = document.getElementById('edChips_' + id); if (c) c.innerHTML = _fbChipsHtml(id, b.text || '', 'edToggleToken');
+  const p = document.getElementById('edPrev_' + id); if (p) p.innerHTML = _edEditorPreviewHtml(b);
+  const s = document.getElementById('edCount_' + id);
+  if (s) {
+    const items = _edItems(b), a = _edStart(b);
+    const todo = items.filter(r => !_edItem(r).answers.length).length;
+    s.textContent = items.length
+      ? `${items.length} item${items.length === 1 ? '' : 's'} (${a}–${a + items.length - 1})${todo ? ` · ${todo} still need a correction` : ''}`
+      : 'no items yet';
+  }
+}
+function edToggleToken(id, idx) {
+  fbToggleToken(id, idx);
+  const ta = document.getElementById('edText_' + id);
+  const b = blocks.find(x => x.id === id);
+  if (ta && b) ta.value = b.text || '';
+  edSyncEditor(id);
+}
+// Read the passage and write the correction for every item that has none. The
+// wrong word is on the block already, so this is the whole marking scheme in one
+// call — hand-typing ten of them is where an editing passage otherwise dies.
+async function edAiCorrections(id, btn) {
+  const b = blocks.find(x => x.id === id); if (!b) return;
+  const items = _edItems(b);
+  if (!items.length) { showToast('Click the wrong words first', 'info'); return; }
+  if (!window.__aiReady || !window.__aiReady()) { showToast("AI isn't set up yet", 'info'); return; }
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Thinking…'; }
+  try {
+    const start = _edStart(b);
+    const passage = edMarkPassage(b, items.map((_, i) => ({ num: start + i })));
+    const list = items.map((raw, i) => {
+      const it = _edItem(raw);
+      return `${start + i}. printed="${it.wrong}"${it.answers.length ? ` current=[${it.answers.map(a => '"' + a + '"').join(', ')}]` : ''}`;
+    }).join('\n');
+    const prompt =
+      `You are a Singapore primary-school English teacher writing the marking scheme for the EDITING section of a paper.\n\n` +
+      `PASSAGE, with each wrong word followed by its numbered box:\n"${passage}"\n\n` +
+      `Each "printed" word below is WRONG — misspelt, or the wrong grammatical form. For EACH item give the correct word that belongs in that position: correctly spelled, and in the exact form the sentence needs (tense, number, part of speech). ` +
+      `List the best answer FIRST, then any OTHER form a marker should also accept — usually none, occasionally one or two. Single words unless the sentence genuinely needs two.\n` +
+      `Return ONLY JSON: {"items":[{"n":${start},"answers":["receive"]}]}\n${list}`;
+    const parsed = _parseAIJson(await askGemini(prompt, { maxOutputTokens: 300 + items.length * 60, temperature: 0.2, json: true }));
+    const arr = Array.isArray(parsed) ? parsed : ((parsed && parsed.items) || []);
+    const byNum = {};
+    arr.forEach(v => { if (v && Array.isArray(v.answers)) byNum[Number(v.n)] = v.answers.map(String); });
+    let touched = 0, i = 0;
+    b.text = _fbParse(b.text).map(p => {
+      if (p.type !== 'blank') return p.text;
+      const it = _edItem(p.answer);
+      const n = start + (i++);
+      // The printed word can never become its own correction, however the model
+      // replies — that is the one answer guaranteed to be wrong.
+      const got = coAlts((byNum[n] || []).join(CO_ALT_SEP)).filter(a => _coNorm(a) !== _coNorm(it.wrong));
+      const merged = coAlts(it.answers.concat(got).join(CO_ALT_SEP));
+      if (merged.length > it.answers.length) touched++;
+      return '[[' + it.wrong + (merged.length ? ED_SEP + merged.join(CO_ALT_SEP) : '') + ']]';
+    }).join('');
+    const ta = document.getElementById('edText_' + id); if (ta) ta.value = b.text;
+    edSyncEditor(id);
+    showToast(touched ? `Wrote corrections for ${touched} item${touched === 1 ? '' : 's'}` : 'Nothing new to add', touched ? 'success' : 'info');
+  } catch (e) {
+    console.error('editing corrections', e);
     showToast('AI error: ' + (e && e.message ? e.message : e), 'error');
   }
   if (btn) { btn.disabled = false; btn.innerHTML = orig; }
@@ -21872,6 +22345,7 @@ function resetOpenAnswersIn(containerSel, scoreElId) {
   // The open cloze locks every blank once it is marked, so a reset that only
   // emptied them would leave a passage that cannot be answered a second time.
   document.querySelectorAll(containerSel + ' [data-co-wrap]').forEach(_coResetWrap);
+  document.querySelectorAll(containerSel + ' [data-ed-wrap]').forEach(_edResetWrap);
   const c = document.querySelector(containerSel);
   if (c) c.querySelectorAll('.post-explanation').forEach(el => el.remove());
   // Wipe any diagram annotations (strokes + text labels + feedback) too.
@@ -24134,6 +24608,15 @@ function buildWorksheetHtml(selected, worksheetTitle, opts) {
             }
             break;
           }
+          case 'editpassage': {
+            if (edHasItems(block)) {
+              qHtml += edPrintHtml(block);
+              _pushAnswerKeySection(qSections, 'Editing', edAnswerKeyText(block), bPart);
+            } else {
+              qHtml += `<div class="print-text-block">${escapeHtmlKeepLines(block.text || '')}</div>`;
+            }
+            break;
+          }
           default: {
             // A non-text block that OPENS a part prints its label too. An MCQ can
             // open one (see QPART_OPENER_TYPES), and without this the paper shows
@@ -24854,6 +25337,8 @@ function _wsQeBlockSummary(b) {
       + cbBank(b).length + '-word bank';
     case 'clozeopen': return _coBlanks(b).length + ' numbered blank' + (_coBlanks(b).length === 1 ? '' : 's') + ' · no word bank'
       + ' · ' + _coBlanks(b).reduce((n, r) => n + coAlts(r).length, 0) + ' accepted answers';
+    case 'editpassage': return _edItems(b).length + ' word' + (_edItems(b).length === 1 ? '' : 's') + ' to correct'
+      + ' · ' + _edItems(b).filter(r => !_edItem(r).answers.length).length + ' with no correction yet';
     case 'explanation': return 'Explanation (answer key)';
     case 'widget': return 'Interactive widget (screen-only, not printed)';
     case 'answerKey': return 'Answer key';
@@ -29681,6 +30166,7 @@ function _docQParts(q) {
     else if (b.type === 'synthesis') { p.text += ' ' + syGiven(b) + (syCue(b) ? ' [' + syCue(b) + ']' : ''); if (syAnswer(b)) p.answers.push({ kind: 'plain', text: syAnswer(b) }); }
     else if (b.type === 'clozebank') { const cp = _fbParse(b.text || ''); p.text += ' ' + cp.map(x => x.type === 'blank' ? x.answer : x.text).join(''); const ans = cbAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
     else if (b.type === 'clozeopen') { const op = _fbParse(b.text || ''); p.text += ' ' + op.map(x => x.type === 'blank' ? coBest(x.answer) : x.text).join(''); const ans = coAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
+    else if (b.type === 'editpassage') { const dp = _fbParse(b.text || ''); p.text += ' ' + dp.map(x => x.type === 'blank' ? _edItem(x.answer).wrong : x.text).join(''); const ans = edAnswerKeyText(b); if (ans) p.answers.push({ kind: 'plain', text: ans }); }
     else if (b.type === 'explanation') scanInline(b.content);
   });
   p.text = p.text.replace(/\s+/g, ' ').trim();
@@ -30215,6 +30701,10 @@ function _cqRepr(q) {
         lines.push('Comprehension cloze, blanks numbered from ' + _cbStart(b) + '. Word bank: '
           + cbBank(b).map((w, i) => '(' + CB_LETTERS[i] + ') ' + w).join(', ')
           + '\nPassage with the answers shown in [[brackets]]: ' + stripHtml(b.text || ''));
+        break;
+      case 'editpassage':
+        lines.push('Editing passage, items numbered from ' + _edStart(b) + '. Each [[wrong>>correction]] is a word printed wrongly and what it should be: '
+          + stripHtml(b.text || ''));
         break;
       case 'clozeopen':
         lines.push('Comprehension cloze (no word bank), blanks numbered from ' + _coStart(b) + '.'
@@ -33809,7 +34299,7 @@ function ppStyles(){
      so the card shows the question and its answer spaces, nothing else. */
   .pp-pe-preview { border:1px solid var(--border); border-radius:12px; padding:18px 20px; background:var(--surface-alt,#fafbfa); }
   .pp-pe-preview .qp-part { background:var(--surface,#fff); }
-  .pp-pe-preview .open-answer, .pp-pe-preview .sy-line, .pp-pe-preview .fb-input, .pp-pe-preview .co-input, .pp-pe-preview input[type=radio] { pointer-events:none; }
+  .pp-pe-preview .open-answer, .pp-pe-preview .sy-line, .pp-pe-preview .fb-input, .pp-pe-preview .co-input, .pp-pe-preview .ed-input, .pp-pe-preview input[type=radio] { pointer-events:none; }
   .pp-pe-preview .part-actions, .pp-pe-preview .part-hint-box, .pp-pe-preview .mcq-feedback,
   .pp-pe-preview .open-feedback, .pp-pe-preview .admin-ans-tool, .pp-pe-preview .mic-btn,
   .pp-pe-preview .fb-actions, .pp-pe-preview .open-photo-bar,
@@ -37049,6 +37539,9 @@ window.cbToggleToken = cbToggleToken;
 window.coSyncEditor = coSyncEditor;
 window.coToggleToken = coToggleToken;
 window.coAiAlternatives = coAiAlternatives;
+window.edSyncEditor = edSyncEditor;
+window.edToggleToken = edToggleToken;
+window.edAiCorrections = edAiCorrections;
 window.sySyncEditor = sySyncEditor;
 window.syAiAnswer = syAiAnswer;
 window.syLineKey = syLineKey;
