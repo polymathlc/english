@@ -367,6 +367,43 @@ properly formed word. Mark one by the other's rules and a class is told
   against the next word, in all three renderings and on paper.
 - Run **`node tools/editing-passage-tests.mjs`** after touching any of it.
 
+## How many questions is a page? (v1.12.0)
+
+A page of **61, 62, 63, 64, 65** holds FIVE questions, not one question with five
+parts. ⚡ Rapid add puts five rows in vetting.
+
+**`_aiQuestionPayloads(parsed)` is the ONE place a build reply becomes the list
+of questions it describes**, and every path that reads one asks it. Both shapes
+work: the old single-question object, and the `questions` array the prompt now
+asks for.
+
+- **The rule is the shared stimulus, not the numbering.** Numbered questions
+  that share nothing are SEPARATE; a passage, poster or infographic followed by
+  numbered questions is still ONE question with lettered parts, because those
+  questions cannot be read without it. The prompt gives the model the test in
+  one line: *if you deleted every other question on the page, would this one
+  still make complete sense?*
+- **The paper's number is only the signal.** It is never kept — no `part`, and
+  not in any block's text. `_epStripNumbering` runs as a guard on a multi-question
+  page, but it only catches the punctuated forms (`61.`, `(61)`): a BARE leading
+  number is deliberately left alone, because `EP_LEAD_NUM_RE` refusing it is what
+  stops "50 ml of water was added" losing its 50. The prompt carries that case.
+- **An entry INHERITS the title / topic / category / tags it does not repeat.**
+  A model told to write them per entry writes them once at the top and stops,
+  and a question landing in vetting untopiced is one an author must open by hand.
+- **An empty or unusable `questions` array falls back to the whole reply**, and
+  a reply with no usable blocks at all returns `[]` — Rapid add turns that into
+  a visible red card rather than a blank question.
+- **Each question is saved as it is built**, not batched at the end: a failure on
+  question 4 must not lose the three that already read perfectly.
+- **The whole-screenshot B&W backup is single-question only.** On a page of five
+  it would give every one of them the same whole-page picture, which is worse
+  than no picture at all.
+- 🤖 **Build from screenshot loads the FIRST and says so** — the editor holds one
+  question, and silently building one of five with nothing on screen to say the
+  other four existed is how they get lost.
+- Run **`node tools/rapid-split-tests.mjs`** after touching any of it.
+
 ### Reading these off a SCREENSHOT
 
 All four are built by **`buildBlocksFromAi`** from rules in
@@ -928,6 +965,10 @@ reported in chat, to know whether the deploy actually went through.
     one line early swallows the first option list; a question number read off a
     quantity cuts the passage in half; a bank that does not contain one of its
     own answers renders and prints perfectly and is unanswerable.
+  - `node tools/rapid-split-tests.mjs` — how many questions a page holds. Split
+    a passage question and its sub-questions lose the passage they are about;
+    fail to split a page of five and four questions are silently thrown away,
+    leaving one row in vetting that looks perfectly fine.
   - `node tools/editing-passage-tests.mjs` — the editing passage's
     `[[wrong>>right]]` split, the rule that the printed word is never a correct
     answer, and the screenshot path into the drag-and-drop cloze. Read the split
