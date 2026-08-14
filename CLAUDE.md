@@ -329,12 +329,27 @@ screen is furniture.
   rewrite phrased differently — which is most of them. Both prompts say a rubric
   OVERRIDES the default "compare by meaning" instruction for that item.
 - **`_openAnswerText(el)` is the ONE place an answer is read**, and both marking
-  paths call it. It joins the rules into one sentence and puts back everything
-  the paper PRINTED and the student therefore never typed: the given opening
-  ("This plot of corn ______"), or the marker gets a fragment and marks a perfect
-  answer as not a sentence; and the closing **full stop**, or it marks a perfect
-  answer down for punctuation nobody asked for. It never double-punctuates. An
-  empty set of rules stays empty: the prefix alone is never an answer.
+  paths call it. It reads the page in the order the page reads, putting back the
+  three things that are PRINTED and therefore never typed. Each one missing marks
+  a perfect rewrite wrong in its own way:
+  - the given **opening** ("This plot of corn ______"), or the marker gets a
+    fragment and says it is not a sentence;
+  - the word provided printed **BETWEEN the rules** ("… because of its" / "… or"),
+    or the marker reads the two rules run together, cannot find the word the
+    question required, and says the connector is missing — the whole question,
+    answered correctly, marked wrong (v1.9.2);
+  - the closing **full stop**, or it marks a perfect answer down for punctuation
+    nobody asked for.
+
+  Each goes back **only where the student has not already written it**
+  (`_syAlreadyTyped`): a student may reasonably type the whole sentence on one
+  rule, word provided and all, and doubling it — "…football player whom." — is
+  the same wrong answer from the other direction. An empty set of rules stays
+  empty: printed words alone are never an answer.
+- **`cueHere` in `syStudentHtml` decides BOTH the span the student reads and the
+  `data-after` the marker reads.** Two expressions could disagree, and that
+  disagreement is invisible — the page shows the connector, the marker never
+  sees it. Same reason `qPartLabelFirst` is asked by screen and paper alike.
 - **`syStudentHtml` refuses a block with nothing given**, exactly as
   `syPrintHtml` does — an item is a markable answer, and one with no question
   behind it is a mark the student can never earn.

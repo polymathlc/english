@@ -95,7 +95,7 @@ const box = (value, prefix) => ({ value, dataset: prefix ? { prefix } : {} });
 // The paper's ruled lines, as the marking paths see them: n inputs sharing one
 // data-sy-group inside one .open-answer-section, the FIRST of them carrying the
 // printed opening and the printed full stop.
-const rules = (values, prefix) => {
+const rules = (values, prefix, after) => {
   const els = [];
   const section = {
     querySelectorAll(sel) {
@@ -106,7 +106,9 @@ const rules = (values, prefix) => {
   values.forEach((v, i) => {
     const e = {
       _g: 'g1', value: v, style: {}, disabled: false, selectionStart: 0, focused: false,
-      dataset: i === 0 ? Object.assign({ suffix: '.' }, prefix ? { prefix } : {}) : {},
+      dataset: i === 0
+        ? Object.assign({ suffix: '.' }, prefix ? { prefix } : {}, after ? { after } : {})
+        : {},
       getAttribute: a => (a === 'data-sy-group' ? e._g : null),
       closest: s => (s === '.open-answer-section' ? section : null),
       focus() { e.focused = true; },
@@ -192,6 +194,73 @@ test('the given opening still comes back, now in front of the rules', () => {
   eq(M._openAnswerText(r[0]), 'This plot of corn was grown from scratch by the farmer.');
 });
 
+// ── the word printed BETWEEN the rules ──────────────────────────────────────
+// The page prints it at the end of the first rule, so the student writes around
+// it and never types it. Left out, the marker reads the two rules run together,
+// cannot find the word the question required, and marks a right answer wrong
+// for a connector the student can see on the page.
+
+test('the word printed between the rules is put back where the page prints it', () => {
+  const r = rules(['The children in the neighbourhood love playing with the cat', 'friendliness'], null, 'because of its');
+  eq(M._openAnswerText(r[0]),
+     'The children in the neighbourhood love playing with the cat because of its friendliness.');
+});
+
+test('it is put back for a one-word connector too', () => {
+  eq(M._openAnswerText(rules(['Produce the voucher', 'you will not get your meal'], null, 'or')[0]),
+     'Produce the voucher or you will not get your meal.');
+  eq(M._openAnswerText(rules(['Mr Kwan,', 'we admire, is our local football player'], null, 'whom')[0]),
+     'Mr Kwan, whom we admire, is our local football player.');
+});
+
+test('a word the student typed THEMSELVES is never doubled', () => {
+  // The same wrong answer from the other direction: a student may reasonably
+  // write the whole sentence on one rule, word provided and all, and
+  // "…is our local football player whom." fails every rubric there is.
+  eq(M._openAnswerText(rules(['Mr Kwan, whom we admire, is our local football player', ''], null, 'whom')[0]),
+     'Mr Kwan, whom we admire, is our local football player.');
+  eq(M._openAnswerText(rules(['Produce the voucher', 'or you will not get your meal'], null, 'or')[0]),
+     'Produce the voucher or you will not get your meal.');
+  eq(M._openAnswerText(rules(['Mark was late because of his', 'indecision'], null, 'because of his')[0]),
+     'Mark was late because of his indecision.');
+});
+
+test('a retyped opening is not doubled either', () => {
+  eq(M._openAnswerText(rules(['This plot of corn was grown from scratch by the farmer', ''], 'This plot of corn')[0]),
+     'This plot of corn was grown from scratch by the farmer.');
+});
+
+test('the connector still goes in when only the second rule is written', () => {
+  // Blank rule, "because of its", "friendliness" — that is what the page says.
+  eq(M._openAnswerText(rules(['', 'friendliness'], null, 'because of its')[0]),
+     'because of its friendliness.');
+});
+
+test('a connector hiding INSIDE another word does not count as typed', () => {
+  // "for" contains "or". Read as already typed, the word the question required
+  // never reaches the marker at all.
+  eq(M._openAnswerText(rules(['Produce the vouchers for your meal', ''], null, 'or')[0]),
+     'Produce the vouchers for your meal or.');
+});
+
+test('a printed word is matched however the student spaced it', () => {
+  eq(M._openAnswerText(rules(['Mark was late because of   his', 'indecision'], null, 'because of his')[0]),
+     'Mark was late because of his indecision.');
+});
+
+test('printed words are never an answer on their own', () => {
+  // Untouched rules must stay blank however much the page prints around them,
+  // or "you did not answer" is marked as "that is not a sentence".
+  eq(M._openAnswerText(rules(['', ''], 'This plot of corn', 'because of its')[0]), '');
+  eq(M._openAnswerText(rules(['  ', ' '], null, 'or')[0]), '');
+});
+
+test('a printed word with regex characters in it never throws', () => {
+  ['(or)', 'a.b', 'it\'s', '[x]', '*', '\\'].forEach(cue => {
+    ok(typeof M._openAnswerText(rules(['He ran', 'home'], null, cue)[0]) === 'string', 'cue ' + cue);
+  });
+});
+
 test('untouched rules are still no answer at all', () => {
   // Otherwise an untouched question is marked as "This plot of corn." — a
   // fragment the marker judges, so "you did not answer" becomes "wrong".
@@ -235,10 +304,23 @@ test('the word provided sits at the END of the first rule, as the paper prints i
   ok(!/data-prefix/.test(h), 'a "use" cue is not the opening of the answer');
 });
 
+test('the word printed between the rules is ALSO handed to the marker', () => {
+  // The span the student reads and the data-after the marker reads come from
+  // one decision. Disagreeing is invisible: the page shows the connector, the
+  // marker never sees it, and a right answer is marked wrong for missing it.
+  ok(/data-after="whom"/.test(student(Q66)), 'the printed word must travel to the marker');
+  ok(!/data-after/.test(student(Q67)), 'a given OPENING is a prefix, not a word printed between rules');
+});
+
 test('a given OPENING sits in front of the first rule and is put back to mark', () => {
   const h = student(Q67);
   ok(h.indexOf('This plot of corn') < h.indexOf('<input'), 'the opening precedes the rule');
   ok(/data-prefix="This plot of corn"/.test(h), 'without this the marker is handed a fragment');
+});
+
+test('the printed word is on the rule it is printed AFTER, and only that one', () => {
+  const h = student(Object.assign({}, Q66, { lines: 3 }));
+  eq((h.match(/data-after=/g) || []).length, 1, 'the connector belongs at one junction, not every rule');
 });
 
 test('the last rule ends in the full stop the paper prints', () => {

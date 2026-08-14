@@ -1749,7 +1749,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.9.1';
+const APP_VERSION = 'v1.9.2';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -21003,21 +21003,56 @@ function _openAnswerPaint(el, color) { _openAnswerEls(el).forEach(x => { x.style
 function _openAnswerClear(el) { _openAnswerEls(el).forEach(x => { x.value = ''; x.disabled = false; x.style.borderColor = ''; }); }
 function _openAnswerLock(el, on) { _openAnswerEls(el).forEach(x => { x.disabled = !!on; }); }
 
-// What the student's box is worth putting in front of the marker. The printed
-// opening is not in the box — it was given — so it is put back here, in the one
-// place both marking paths read an answer from. So is the closing full stop the
-// paper prints at the end of the last rule: without it the marker is handed an
-// unpunctuated sentence and marks a perfect rewrite down for punctuation the
-// student was never asked to type.
+// Did the student write this printed text themselves? The page already prints
+// it, so putting it back a second time hands the marker a duplicate — "…is our
+// local football player whom." — and it marks a perfect answer wrong.
+// `atStart` for the given opening (it can only be the opening); anywhere in the
+// sentence for a word provided, which is where a joining word belongs.
+function _syAlreadyTyped(typed, printed, atStart) {
+  const p = String(printed || '').trim();
+  if (!p) return false;
+  const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  try { return new RegExp((atStart ? '^' : '(^|[^A-Za-z0-9])') + esc + '([^A-Za-z0-9]|$)', 'i').test(typed); }
+  catch (_) { return typed.toLowerCase().indexOf(p.toLowerCase()) >= 0; }
+}
+
+// What the student's work is worth putting in front of the marker, read in the
+// order the PAGE reads: this is the one place both marking paths get an answer.
+//
+// Three things on that page are PRINTED and therefore never typed, and each one
+// missing marks a perfect rewrite wrong in its own way:
+//
+//  • the given OPENING ("This plot of corn ______") — without it the marker is
+//    handed a fragment and says it is not a sentence;
+//  • the word provided printed BETWEEN the rules ("… because of its" / "… or")
+//    — without it the marker reads the two rules run together, cannot find the
+//    word the question required, and says the connector is missing. That is the
+//    whole question the student answered correctly, marked wrong;
+//  • the closing FULL STOP at the end of the last rule — without it a perfect
+//    rewrite is marked down for punctuation nobody asked for.
+//
+// Each is put back only where the student has not already written it. A student
+// may reasonably type the whole sentence on one rule, word provided and all, and
+// doubling it is the same wrong answer from the other direction.
 function _openAnswerText(el) {
   if (!el) return '';
-  const typed = _openAnswerEls(el)
-    .map(x => String(x && x.value == null ? '' : x.value).trim())
-    .filter(Boolean).join(' ').trim();
-  if (!typed) return '';
+  const els = _openAnswerEls(el);
+  const vals = els.map(x => String(x && x.value == null ? '' : x.value).trim());
+  // Printed words alone are never an answer: an untouched question must stay
+  // blank, or "you did not answer" is marked as "that is not a sentence".
+  if (!vals.some(Boolean)) return '';
+  const typed = vals.filter(Boolean).join(' ');
   const pre = String((el.dataset && el.dataset.prefix) || '').trim();
   const suf = String((el.dataset && el.dataset.suffix) || '').trim();
-  let out = (pre ? pre + ' ' : '') + typed;
+  const parts = [];
+  if (pre && !_syAlreadyTyped(typed, pre, true)) parts.push(pre);
+  els.forEach((x, i) => {
+    if (vals[i]) parts.push(vals[i]);
+    // Printed at the end of THIS rule, so it belongs here in the reading order.
+    const after = String((x && x.dataset && x.dataset.after) || '').trim();
+    if (after && !_syAlreadyTyped(typed, after, false)) parts.push(after);
+  });
+  let out = parts.join(' ').replace(/\s+/g, ' ').trim();
   if (suf && !/[.!?]["'”’)\]]?$/.test(out)) out += suf;
   return out;
 }
@@ -21072,14 +21107,22 @@ function syStudentHtml(items, block, containerSel, partLabel) {
     // first rule when the opening is given, at the end of it otherwise. The
     // closing full stop sits at the end of the last rule. None of the three is
     // typed — they are printed, so they are put back by _openAnswerText.
+    //
+    // `cueHere` decides BOTH the span the student reads and the `data-after` the
+    // marker reads, from one expression. Two expressions could disagree, and
+    // that disagreement is invisible: the page shows "… because of its" between
+    // the rules, the marker is handed the rules run together without it, and a
+    // right answer is marked wrong for a connector the student can see.
+    const cueHere = first && !!cue && !start;
     const lead = (first && prefix) ? `<span class="sy-lead">${escapeHtml(prefix)}</span>` : '';
-    const tail = (first && cue && !start ? `<span class="sy-cue-end">${escapeHtml(cue)}</span>` : '')
+    const tail = (cueHere ? `<span class="sy-cue-end">${escapeHtml(cue)}</span>` : '')
       + (last ? '<span class="sy-stop">.</span>' : '');
+    const after = cueHere ? ` data-after="${escapeHtml(cue)}"` : '';
     // The FIRST rule is the registered `.open-answer` — one item, one answer,
     // marked as one sentence. The rest are its continuation lines.
     const own = first
-      ? `class="open-answer sy-line" data-oidx="${oidx}"${prefix ? ` data-prefix="${escapeHtml(prefix)}"` : ''} data-suffix="."`
-      : 'class="sy-line"';
+      ? `class="open-answer sy-line" data-oidx="${oidx}"${prefix ? ` data-prefix="${escapeHtml(prefix)}"` : ''}${after} data-suffix="."`
+      : `class="sy-line"${after}`;
     const ph = first ? (prefix ? '…finish the sentence' : 'Click and type your sentence') : '';
     rows.push(`<div class="sy-line-row">${lead}<input type="text" ${own} data-sy-group="${gid}"
           placeholder="${ph}" autocomplete="off" autocapitalize="sentences"
