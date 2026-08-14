@@ -155,11 +155,31 @@ still live (it gates what a student may be served); it is simply not announced.
 Both arrived in v1.6.0 and both exist because the block editor could not express
 a **passage with its own sub-questions as ONE bank question**.
 
-### Parts may be NUMBERS
+### Sub-questions are LETTERED — (a) (b) (c) — whatever the paper called them
 
-`qPartNormalize` accepts **1–999** as well as a letter. A comprehension passage
-prints "(16)" against an underlined word and the option list below answers it,
-so relabelling those (a) (b) (c) severs the only link between the two.
+**Every automatic path letters them** (v1.8.0): the passage builder, and the AI
+read of a screenshot set. The paper's 16, 17, 18 / 21, 22, 23 are *that exam
+paper's* numbering, not this question's — a bank question stands on its own, and
+one that opens at part (21) reads as though twenty parts are missing.
+
+- **The markers INSIDE the passage are renumbered to match**
+  (`_pbRelabelPassage`). The paper prints "(16)" against the underlined word
+  question 16 asks about; letter the questions and leave the passage alone and
+  the student reads "(16)" over the word, then hunts for a question 16 that is
+  now part (a). Only the **parenthesised whole number** is rewritten, so "(160)"
+  and the 16 in "16 January" survive. The AI prompt asks for the same rewrite on
+  any passage text it transcribes.
+- **Past the alphabet a sub-question is DROPPED and the author is told**
+  (`pbPartOverflow`). It is never given an empty part: `qPartMap` inherits
+  forward, so an unlabelled sub-question is filed under the previous one and two
+  option lists share a heading.
+- `pbPartLetter(i)` is the one place an index becomes a letter.
+
+### Parts may still be NUMBERS
+
+`qPartNormalize` accepts **1–999** as well as a letter. Nothing automatic
+produces one any more — the parts bar's **Number from** box is the deliberate
+manual escape hatch, for an author who does want the paper's numbering.
 
 - **Detection is deliberately NOT extended.** `qPartDetect` still matches
   letters only — a number at the start of a line is a question number, a
@@ -181,7 +201,7 @@ so relabelling those (a) (b) (c) severs the only link between the two.
 ### 📑 The passage builder (`pb*`)
 
 Paste the passage and the option lists as they are on the paper; out comes one
-text block plus one MCQ per sub-question, each opening its numeric part.
+text block plus one MCQ per sub-question, each opening its own lettered part.
 
 - **The parse is deterministic — there is no AI in it.** A wrong guess here is
   not a wrong answer, it is four options quietly filed under the wrong number.
@@ -205,14 +225,16 @@ question 21 of the passage"**, so a comprehension page came back as eight
 option lists in a row with nothing telling them apart.
 
 - **`buildBlocksFromAi` honours an explicit `"part"`** on any AI block, through
-  `qPartNormalize` — so `"21"` and `"b"` both work — with `QPART_NONE`
-  preserved. It is stamped on the FIRST block that entry produced, because
+  `qPartNormalize` — so `"b"` and `"21"` both work, though the prompt now asks
+  for letters — with `QPART_NONE` preserved. It is stamped on the FIRST block that entry produced, because
   `qPartMap` inherits forward. This is the ONE function every AI authoring path
   goes through, so all of them gained it at once.
 - **`qLiftPartMarkers` already skipped a block that opens a part**, which is
   what stops the typed-marker pass overwriting the model's numbering.
 - **The rules live in `_partsPromptRules()`**, the fragment all four build
-  prompts carry — do not restate them in a prompt.
+  prompts carry — do not restate them in a prompt. They tell the model to
+  LETTER the sub-questions in order and to rewrite any "(16)" marker in the
+  passage text to the matching letter.
 - **`qPartLabelFirst(blocks, block)` decides who prints the label.** A numbered
   question is usually a text block (the wording) and an MCQ (the options) both
   filed under (21); labelled twice the paper reads "(21) What does… (21) (1)
@@ -715,7 +737,7 @@ reported in chat, to know whether the deploy actually went through.
     is eight option lists in a row with nothing telling them apart, on a screen
     that still looks right.
   - `node tools/passage-cloze-tests.mjs` — the passage builder's parse, the
-    cloze's word bank, and the numeric part labels both rest on. A passage split
+    cloze's word bank, and the part lettering both rest on. A passage split
     one line early swallows the first option list; a question number read off a
     quantity cuts the passage in half; a bank that does not contain one of its
     own answers renders and prints perfectly and is unanswerable.

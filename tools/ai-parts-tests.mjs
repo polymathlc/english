@@ -3,19 +3,24 @@
 //     node tools/ai-parts-tests.mjs <name>     one case
 //
 // It loads the REAL `buildBlocksFromAi` out of app.js and feeds it the JSON a
-// model returns for a comprehension page — a passage, then questions 21 to 28.
+// model returns for a comprehension page — a passage, then the questions on it.
 //
 // This is pinned because `buildBlocksFromAi` is the ONE function every AI
 // authoring path goes through (Build from screenshot, Rapid add, the bulk PDF
 // import, the exam paper builder, the learning-gap generator), and the "part"
-// field is the only way the model can say "these four options are question 21
-// of the passage". Drop it and the failure is completely silent: eight option
+// field is the only way the model can say "these four options are part (a) of
+// the passage". Drop it and the failure is completely silent: eight option
 // lists render in a row with nothing telling them apart, the answer key prints
 // all eight under one heading, and every screen still looks right.
 //
+// The parts are LETTERED (a) (b) (c), not given the paper's own 21, 22, 23:
+// those numbers belong to that exam paper and a bank question stands on its
+// own. A number is still accepted, because the parts bar's "Number from" box
+// lets an author set one by hand.
+//
 // The other direction matters too. `qLiftPartMarkers` runs immediately after,
 // hunting typed "(a)" markers — it must leave a block that already carries a
-// part alone, or the model's numbering is overwritten by whatever the text
+// part alone, or the model's lettering is overwritten by whatever the text
 // happens to start with.
 import fs from 'fs';
 
@@ -78,23 +83,33 @@ const partsOf = bs => bs.map(b => M.qBlockOpensPart(b));
 
 // ── the shape a comprehension page comes back as ────────────────────────────
 
-// One passage, one poster picture, then questions 21–24, exactly what the
-// model is asked to return for a page of "Myths of lice" + Q21 onwards.
+// One passage, one poster picture, then the four questions that follow it —
+// exactly what the model is asked to return for a page of "Myths of lice" plus
+// Q21 onwards. The paper numbers them 21 to 24; the model is told to LETTER
+// them (a) (b) (c) (d), because those numbers belong to that exam paper and a
+// bank question stands on its own.
 const PAGE = [
-  { type: 'text', text: 'For each question from 21 to 24, four options are given.' },
+  { type: 'text', text: 'For each question, four options are given.' },
   { type: 'image', page: 1, box_2d: [40, 30, 900, 970] },
-  { type: 'text', part: '21', text: 'What does the word "Troublemakers" in the title refer to?' },
-  mcq('21', ['humans', 'head lice', 'parasites', 'infestations'], 1),
-  { type: 'text', part: '22', text: 'This article is an extract from ______.' },
-  mcq('22', ['a daily newspaper', 'a medical journal', 'a magazine for parents', 'a school magazine'], 2),
-  mcq('23', ['one', 'two', 'three', 'four']),
-  mcq('24', ['one', 'two', 'three', 'four'], 3)
+  { type: 'text', part: 'a', text: 'What does the word "Troublemakers" in the title refer to?' },
+  mcq('a', ['humans', 'head lice', 'parasites', 'infestations'], 1),
+  { type: 'text', part: 'b', text: 'This article is an extract from ______.' },
+  mcq('b', ['a daily newspaper', 'a medical journal', 'a magazine for parents', 'a school magazine'], 2),
+  mcq('c', ['one', 'two', 'three', 'four']),
+  mcq('d', ['one', 'two', 'three', 'four'], 3)
 ];
 
-test('every numbered question keeps the number the paper printed', () => {
+test('every question after the passage keeps its letter, in order', () => {
   const bs = build(PAGE);
   const mcqs = bs.filter(b => b.type === 'mcq');
-  eq(mcqs.map(b => b.part), ['21', '22', '23', '24']);
+  eq(mcqs.map(b => b.part), ['a', 'b', 'c', 'd']);
+});
+
+test('a NUMBER is still honoured, for a question numbered by hand', () => {
+  // The automatic paths all letter now, but the parts bar's "Number from" box
+  // is a deliberate manual escape hatch and qPartNormalize still takes 1-999.
+  const bs = build([mcq('21'), mcq('22')]);
+  eq(bs.map(b => b.part), ['21', '22']);
 });
 
 test('the shared instruction and the poster stay OUTSIDE the parts', () => {
@@ -108,8 +123,8 @@ test("a question's wording and its options land under the same part", () => {
   const map = M.qPartMap(bs);
   const wording = bs.find(b => b.type === 'text' && /Troublemakers/.test(b.content));
   const opts = bs.filter(b => b.type === 'mcq')[0];
-  eq(M.qPartOf(map, wording), '21');
-  eq(M.qPartOf(map, opts), '21');
+  eq(M.qPartOf(map, wording), 'a');
+  eq(M.qPartOf(map, opts), 'a');
 });
 
 test('nothing before the first part is filed under one', () => {
@@ -140,10 +155,12 @@ test('a lettered part still works the same way', () => {
 });
 
 test('a declared part is NOT overwritten by a marker typed in the text', () => {
-  // qLiftPartMarkers hunts a leading "(a)" and would file this under (a),
-  // throwing away the number the model was asked for.
-  const bs = build([{ type: 'text', part: '21', text: '(a) What does the word mean?' }]);
-  eq(M.qBlockOpensPart(bs[0]), '21');
+  // qLiftPartMarkers hunts a leading marker and would file this under (a),
+  // throwing away the letter the model was asked for.
+  const bs = build([{ type: 'text', part: 'c', text: '(a) What does the word mean?' }]);
+  eq(M.qBlockOpensPart(bs[0]), 'c');
+  const bn = build([{ type: 'text', part: '21', text: '(a) What does the word mean?' }]);
+  eq(M.qBlockOpensPart(bn[0]), '21');
 });
 
 test('a typed marker still works when the model declares no part', () => {
@@ -171,8 +188,8 @@ test('a part the app cannot name is dropped, not stored raw', () => {
 
 test('the unfiled marker survives, so a whole-question note stays unfiled', () => {
   const bs = build([
-    { type: 'text', part: '21', text: 'Q21' },
-    mcq('21'),
+    { type: 'text', part: 'a', text: 'The first question' },
+    mcq('a'),
     { type: 'explanation', part: '-', text: 'A note about the whole passage.' }
   ]);
   const ex = bs.find(b => b.type === 'explanation');
@@ -181,8 +198,8 @@ test('the unfiled marker survives, so a whole-question note stays unfiled', () =
 
 test('only the first block of an entry is stamped, never every one', () => {
   // qPartMap inherits forward, so labelling both would open the same part twice.
-  const bs = build([{ type: 'answer', part: '21', claim: 'c', evidence: 'e', reasoning: 'r' }]);
-  eq(bs.filter(b => M.qBlockOpensPart(b) === '21').length, 1);
+  const bs = build([{ type: 'answer', part: 'b', claim: 'c', evidence: 'e', reasoning: 'r' }]);
+  eq(bs.filter(b => M.qBlockOpensPart(b) === 'b').length, 1);
 });
 
 test('a page with no parts at all is unchanged', () => {
