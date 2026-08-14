@@ -90,14 +90,15 @@ const NOTES_COL     = 'teachingNotesEn';    // users/{uid}/teachingNotesEn
 const STATS_COL     = 'statsEn';            // users/{uid}/statsEn
 const WORKSHEETS_COL     = 'worksheetsEn';  // users/{uid}/worksheetsEn
 const USER_WORKSESSION_COL = 'workSessionsEn';
-// These three predate the naming convention and are shared with no one, so they
-// keep their plain names. They are here — rather than spelled inline where they
-// are used — because a collection the rules do not name FAILS CLOSED, and the
-// only way to keep firestore.rules honest is to be able to read the whole list
-// of collections in one place.
-const MISTAKES_COL   = 'mistakes';            // users/{uid}/mistakes
-const FLASHCARDS_COL = 'flashcards';          // users/{uid}/flashcards
-const SCHEDULED_COL  = 'scheduledQuestions';  // users/{uid}/scheduledQuestions
+// These three kept their plain names until v1.3.0, on the belief that they were
+// shared with no one. They were not: the Science app writes exactly these three
+// names under the same users/{uid} tree, so one student's mistake log and
+// revision deck held both subjects at once — and a question the SCIENCE app had
+// queued for release landed in the ENGLISH bank on its release date, which would
+// have re-linked the two banks a day after they were separated.
+const MISTAKES_COL   = 'mistakesEn';            // users/{uid}/mistakesEn
+const FLASHCARDS_COL = 'flashcardsEn';          // users/{uid}/flashcardsEn
+const SCHEDULED_COL  = 'scheduledQuestionsEn';  // users/{uid}/scheduledQuestionsEn
 // Top-level (shared across accounts, so the teacher can read the class).
 const PROFILES_COL  = 'enUserProfiles';
 const CONFIG_COL    = 'enConfig';
@@ -1736,7 +1737,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.3.0';
 // ---- The always-visible session bar ----
 // Staff must never be in any doubt about whose account is being played, so
 // this sits above everything until the session ends.
@@ -11195,6 +11196,15 @@ function renderQuestionBank() {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
         <h3>No questions yet</h3>
         <p>Create your first question to get started</p>
+        ${_isAdmin() && questionBank.length === 0 ? `
+        <!-- The bank being empty is exactly what an admin sees the first time
+             they open it after v1.3.0 separated the two apps: the questions are
+             not lost, they are in the Science bank this app used to write to. -->
+        <p style="margin-top:18px;line-height:1.75;">
+          Authored questions here before and expected to see them?<br>
+          Until v1.3.0 they were saved into the Science portal's bank.
+        </p>
+        <button class="btn btn-outline" style="margin-top:10px;" onclick="lbOpen()">📦 Move them across</button>` : ''}
       </div>`;
     return;
   }
@@ -17064,12 +17074,21 @@ function wkExportCsv() {
 // =====================================================================
 // STORAGE — subcollection-per-question architecture
 //
-//   users/{uid}/questions/{questionId}   ← question bank
-//   users/{uid}/vetting/{questionId}     ← vetting list
+//   users/{uid}/questionsEn/{questionId}   ← question bank
+//   users/{uid}/vettingEn/{questionId}     ← vetting list
 //
 // Each question is its own document: no transactions, no size limits,
 // no merging complexity.  A single setDoc/deleteDoc call never fails
 // due to contention or document growth.
+//
+// THE COLLECTION NAME COMES FROM THE CONSTANT, NEVER FROM A LITERAL HERE.
+// These four functions are the only door to the bank, and until v1.3.0 they
+// spelled 'questions' / 'vetting' inline — the Science app's own names, under
+// the same users/{uid} tree, in the same Firebase project. So every English
+// question this app saved went into the SCIENCE bank and every Science question
+// came back out of it: one bank wearing two apps. Nothing threw, nothing looked
+// broken, and the only symptom was Science questions listed on the English
+// bank page. `_lb*` below moves the English ones back out.
 // =====================================================================
 
 // _bankOwnerUid, not currentUser.uid: an employee authors into the teacher's
@@ -17077,10 +17096,304 @@ function wkExportCsv() {
 // students are served from.
 function _qOwner(id) { return _ownerUidByQuestionId[id] || _bankOwnerUid(); }
 function _vOwner(id) { return _ownerUidByVettingId[id]  || _bankOwnerUid(); }
-function _qRef(id) { return doc(db, 'users', _qOwner(id), 'questions', id); }
-function _vRef(id) { return doc(db, 'users', _vOwner(id), 'vetting',   id); }
-function _qCol()   { return collection(db, 'users', _bankOwnerUid(), 'questions'); }
-function _vCol()   { return collection(db, 'users', _bankOwnerUid(), 'vetting');   }
+function _qRef(id) { return doc(db, 'users', _qOwner(id), QUESTIONS_COL, id); }
+function _vRef(id) { return doc(db, 'users', _vOwner(id), VETTING_COL,   id); }
+function _qCol()   { return collection(db, 'users', _bankOwnerUid(), QUESTIONS_COL); }
+function _vCol()   { return collection(db, 'users', _bankOwnerUid(), VETTING_COL);   }
+
+// =====================================================================
+// LEGACY BANK RESCUE — one-time, admin only  (v1.3.0)
+//
+// Everything this app saved before the four helpers above were fixed is
+// sitting in the SCIENCE app's collections: users/{uid}/questions,
+// users/{uid}/vetting, and users/{uid}/scheduledQuestions for anything queued
+// for release. Separating the two banks therefore reads as "all my questions
+// have gone", and leaves the Science bank holding a pile of English ones — so
+// this moves them back across.
+//
+// Which subject a question belongs to is decided by its TOPIC, and that is a
+// strong signal: the two topic lists do not share a single entry, and the topic
+// comes off a <select> rather than being typed. Anything neither list knows is
+// listed as UNKNOWN and left UNTICKED — moving a question here removes it from
+// the other app, so a guess is not the tool's to make.
+//
+// A question is never deleted on the strength of a write having been issued:
+// the copy is read back first, and one that cannot be verified leaves the
+// original exactly where it is. Running it twice is harmless.
+// =====================================================================
+const LEGACY_COLS = {
+  questions: { from: 'questions',          to: QUESTIONS_COL, label: '📚 Question bank' },
+  vetting:   { from: 'vetting',            to: VETTING_COL,   label: '🔍 Vetting list' },
+  scheduled: { from: 'scheduledQuestions', to: SCHEDULED_COL, label: '📅 Scheduled for release' },
+};
+const LEGACY_KINDS = Object.keys(LEGACY_COLS);
+const LB_CHUNK = 6;             // moves in flight at once
+let _lbScan = null;             // { questions:[], vetting:[], scheduled:[], science, unknown, english }
+let _lbPick = new Set();        // 'kind:docId'
+let _lbBusy = false;
+
+// A scheduled release wraps the whole question in `questionData`; the bank and
+// the vetting list hold it plainly. One accessor, so the three read alike.
+function _lbInner(data) { return (data && data.questionData) ? data.questionData : data; }
+function _lbTitle(data) {
+  const q = _lbInner(data) || {};
+  return String(q.title || (data && data.questionTitle) || '').trim() || 'Untitled question';
+}
+function _lbTopic(data) {
+  const q = _lbInner(data) || {};
+  return String(q.topic || (data && data.topic) || '').trim();
+}
+
+// Every topic this app has ever offered: the live list, plus the raw defaults
+// (so a topic the admin has since hidden still reads as English) plus their own
+// custom ones. Lower-cased, because a topic is matched by exact string.
+function _lbEnglishTopics() {
+  const s = new Set();
+  const add = t => { const k = String(t == null ? '' : t).trim().toLowerCase(); if (k) s.add(k); };
+  try { currentTopics().forEach(add); } catch (_) {}
+  try { Object.keys(topicLevelMap).forEach(add); } catch (_) {}
+  try { Object.keys(customTopics).forEach(add); } catch (_) {}
+  return s;
+}
+
+// The Science portal's topic list (polymathlc/cer, `topicLevelMap`), so a
+// question can be positively identified as the OTHER app's rather than merely
+// failing to look like this one's. Without it, an English question filed under
+// a topic this browser does not know — custom topics live in localStorage, so
+// another machine has none of them — would be quietly written off as Science
+// and left behind, with the tool reporting nothing to move.
+const LEGACY_SCIENCE_TOPICS = [
+  'Living and non-living things', 'Materials', 'Life Cycles', 'Magnets',
+  'Plant Systems', 'Human Body Systems', 'Matter and its 3 States', 'Light', 'Heat',
+  'Water and its 3 States', 'Plant Reproduction', 'Human Reproduction',
+  'Human and Plant Respiration', 'Human and Plant Transport', 'Electrical Systems',
+  'Forces', 'Energy in Food', 'Energy Conversion',
+  'Living Together', 'Food Chains and Webs', 'Humans and the Environment',
+  'Cell Systems',   // retired over there, still on its older questions
+].map(t => t.toLowerCase());
+
+// english → move it back. science → leave it alone, and don't even list it.
+// Anything else → UNKNOWN: listed, unticked, and the admin decides. A verdict
+// this tool is not sure of is never spent on the student's behalf.
+function _lbVerdict(data, english) {
+  const q = _lbInner(data) || {};
+  const topics = [q.topic, q.topic2, data && data.topic]
+    .map(t => String(t == null ? '' : t).trim().toLowerCase()).filter(Boolean);
+  if (!topics.length) return 'unknown';
+  if (topics.some(t => english.has(t))) return 'english';
+  if (topics.some(t => LEGACY_SCIENCE_TOPICS.includes(t))) return 'science';
+  return 'unknown';
+}
+
+// Read the three legacy collections. Science questions are COUNTED and not
+// listed: a bank of two thousand of them is not something to scroll past to
+// reach the eighteen that need moving.
+async function _lbRunScan() {
+  const owner = _bankOwnerUid();
+  if (!owner) throw new Error('not signed in');
+  const english = _lbEnglishTopics();
+  const out = { questions: [], vetting: [], scheduled: [], science: 0, unknown: 0, english: 0 };
+  for (const kind of LEGACY_KINDS) {
+    const snap = await getDocs(collection(db, 'users', owner, LEGACY_COLS[kind].from));
+    snap.forEach(d => {
+      const data = d.data();
+      if (!data) return;
+      const verdict = _lbVerdict(data, english);
+      if (verdict === 'science') { out.science++; return; }
+      out[verdict]++;
+      out[kind].push({ kind, docId: d.id, data, verdict, title: _lbTitle(data), topic: _lbTopic(data) });
+    });
+  }
+  return out;
+}
+
+// Copy → read back → delete. The read-back is what makes the delete safe: a
+// write that resolved is not the same as a document that is there.
+async function _lbMoveOne(rec) {
+  const owner = _bankOwnerUid();
+  const spec = LEGACY_COLS[rec.kind];
+  const to = doc(db, 'users', owner, spec.to, rec.docId);
+  await setDoc(to, rec.data);
+  const back = await getDoc(to);
+  if (!back.exists()) throw new Error('the copy could not be read back');
+  await deleteDoc(doc(db, 'users', owner, spec.from, rec.docId));
+}
+
+function lbOpen() {
+  if (!_isAdmin()) return;
+  const ov = document.getElementById('legacyBankOverlay');
+  if (!ov) return;
+  ov.classList.add('active');
+  if (_lbScan) lbRender(); else lbRescan();
+}
+
+function lbClose() {
+  if (_lbBusy) return;   // a half-finished move must not be walked away from
+  const ov = document.getElementById('legacyBankOverlay');
+  if (ov) ov.classList.remove('active');
+}
+
+async function lbRescan() {
+  if (_lbBusy) return;
+  _lbBusy = true;
+  _lbScan = null;
+  _lbPick = new Set();
+  lbRender('Reading the Science app’s bank…');
+  try {
+    _lbScan = await _lbRunScan();
+    // Pre-tick what the topic lists recognise as English; the unknowns stay
+    // unticked, because moving one takes it out of the other app.
+    LEGACY_KINDS.forEach(kind => {
+      _lbScan[kind].forEach(r => { if (r.verdict === 'english') _lbPick.add(kind + ':' + r.docId); });
+    });
+  } catch (err) {
+    console.warn('legacy bank scan', err);
+    _lbScan = { error: (err && err.message) || 'could not read the old bank' };
+  }
+  _lbBusy = false;
+  lbRender();
+}
+
+// By INDEX, not by document id: these ids come out of another app's collection,
+// and escapeHtml leaves a quote alone — one in an id would break out of the
+// onchange attribute it was being interpolated into.
+function lbToggle(kind, idx) {
+  const rec = _lbScan && _lbScan[kind] && _lbScan[kind][idx];
+  if (!rec) return;
+  const key = kind + ':' + rec.docId;
+  if (_lbPick.has(key)) _lbPick.delete(key); else _lbPick.add(key);
+  lbRender();
+}
+
+function lbToggleAll(kind, on) {
+  if (!_lbScan || !_lbScan[kind]) return;
+  _lbScan[kind].forEach(r => {
+    const key = kind + ':' + r.docId;
+    if (on) _lbPick.add(key); else _lbPick.delete(key);
+  });
+  lbRender();
+}
+
+function _lbBadge(verdict) {
+  return verdict === 'english'
+    ? '<span style="background:rgba(16,124,73,0.12);color:#0d6b41;border-radius:999px;padding:2px 9px;font-size:0.72rem;font-weight:600;white-space:nowrap;">English topic</span>'
+    : '<span style="background:rgba(180,120,10,0.14);color:#8a5a06;border-radius:999px;padding:2px 9px;font-size:0.72rem;font-weight:600;white-space:nowrap;">Topic not recognised</span>';
+}
+
+function lbRender(status) {
+  const body = document.getElementById('lbBody');
+  const foot = document.getElementById('lbFoot');
+  if (!body || !foot) return;
+
+  if (_lbBusy || !_lbScan) {
+    body.innerHTML = `<div style="padding:34px 8px;text-align:center;color:var(--text-muted);line-height:1.7;">
+        <div style="font-size:1.6rem;margin-bottom:10px;">⏳</div>
+        ${escapeHtml(status || 'Working…')}
+      </div>`;
+    foot.innerHTML = '';
+    return;
+  }
+
+  if (_lbScan.error) {
+    body.innerHTML = `<div style="padding:22px;background:rgba(220,60,60,0.06);border:1px solid rgba(220,60,60,0.25);border-radius:12px;line-height:1.7;">
+        <b>Could not read the old bank.</b><br>
+        <span style="color:var(--text-muted);font-size:0.88rem;">${escapeHtml(_lbScan.error)}</span>
+      </div>`;
+    foot.innerHTML = `<button class="btn btn-outline" onclick="lbClose()">Close</button>
+      <button class="btn btn-primary" onclick="lbRescan()">Try again</button>`;
+    return;
+  }
+
+  const total = LEGACY_KINDS.reduce((n, k) => n + _lbScan[k].length, 0);
+  if (!total) {
+    body.innerHTML = `<div style="padding:30px 8px;text-align:center;line-height:1.8;">
+        <div style="font-size:1.8rem;margin-bottom:8px;">✓</div>
+        <b>Nothing left to move.</b><br>
+        <span style="color:var(--text-muted);font-size:0.9rem;">
+          The Science app's bank holds ${_lbScan.science} question${_lbScan.science === 1 ? '' : 's'},
+          and every one of them is filed under a Science topic.
+        </span>
+      </div>`;
+    foot.innerHTML = `<button class="btn btn-primary" onclick="lbClose()">Done</button>`;
+    return;
+  }
+
+  const groups = LEGACY_KINDS.filter(k => _lbScan[k].length).map(kind => {
+    const rows = _lbScan[kind].map((r, i) => {
+      const on = _lbPick.has(kind + ':' + r.docId);
+      return `<label style="display:flex;gap:12px;align-items:flex-start;padding:11px 13px;border-bottom:1px solid var(--border);cursor:pointer;">
+          <input type="checkbox" ${on ? 'checked' : ''} onchange="lbToggle('${kind}',${i})"
+                 style="appearance:auto;-webkit-appearance:auto;margin-top:3px;flex:0 0 auto;">
+          <span style="flex:1;min-width:0;line-height:1.6;">
+            <span style="display:block;font-weight:600;">${escapeHtml(r.title)}</span>
+            <span style="display:block;color:var(--text-muted);font-size:0.82rem;">
+              ${r.topic ? escapeHtml(r.topic) : '<em>no topic</em>'}
+            </span>
+          </span>
+          ${_lbBadge(r.verdict)}
+        </label>`;
+    }).join('');
+    return `<div style="margin-bottom:22px;border:1px solid var(--border);border-radius:12px;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface-2,rgba(0,0,0,0.03));border-bottom:1px solid var(--border);">
+          <b style="flex:1;">${LEGACY_COLS[kind].label}</b>
+          <span style="color:var(--text-muted);font-size:0.82rem;">${_lbScan[kind].length} found</span>
+          <button class="btn btn-outline" style="padding:3px 10px;font-size:0.78rem;" onclick="lbToggleAll('${kind}',true)">Tick all</button>
+          <button class="btn btn-outline" style="padding:3px 10px;font-size:0.78rem;" onclick="lbToggleAll('${kind}',false)">None</button>
+        </div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div style="padding:14px 16px;background:rgba(37,99,235,0.06);border:1px solid rgba(37,99,235,0.2);border-radius:12px;line-height:1.75;margin-bottom:22px;font-size:0.88rem;">
+      Ticked questions are <b>moved</b> — copied into the English bank, then removed from the
+      Science one. ${_lbScan.science} question${_lbScan.science === 1 ? '' : 's'} filed under a
+      Science topic ${_lbScan.science === 1 ? 'is' : 'are'} left alone and not listed here.
+      ${_lbScan.unknown ? `<br><b>${_lbScan.unknown}</b> could not be placed by topic and ${_lbScan.unknown === 1 ? 'is' : 'are'} left unticked — have a look before moving ${_lbScan.unknown === 1 ? 'it' : 'them'}.` : ''}
+    </div>
+    ${groups}`;
+
+  const picked = _lbPick.size;
+  foot.innerHTML = `
+    <span style="margin-right:auto;color:var(--text-muted);font-size:0.86rem;">${picked} ticked</span>
+    <button class="btn btn-outline" onclick="lbClose()">Cancel</button>
+    <button class="btn btn-primary" onclick="lbMove()" ${picked ? '' : 'disabled'}>Move ${picked} to the English bank</button>`;
+}
+
+async function lbMove() {
+  if (_lbBusy || !_lbScan || _lbScan.error) return;
+  const picks = [];
+  LEGACY_KINDS.forEach(kind => {
+    (_lbScan[kind] || []).forEach(r => { if (_lbPick.has(kind + ':' + r.docId)) picks.push(r); });
+  });
+  if (!picks.length) return;
+
+  _lbBusy = true;
+  let failed = 0, moved = 0;
+  for (let i = 0; i < picks.length; i += LB_CHUNK) {
+    const slice = picks.slice(i, i + LB_CHUNK);
+    lbRender(`Moving ${Math.min(i + slice.length, picks.length)} of ${picks.length}…`);
+    const results = await Promise.all(slice.map(r =>
+      _lbMoveOne(r).then(() => true).catch(err => { console.warn('legacy move', r.docId, err); return false; })));
+    results.forEach(ok => { if (ok) moved++; else failed++; });
+  }
+  // Still busy through the reload — the dialog must not be closable while the
+  // bank underneath it is being rebuilt.
+  lbRender('Reloading the bank…');
+  // Re-read rather than patching the arrays by hand: the bank, the vetting list
+  // and the release queue have all just changed underneath us.
+  try { await loadFromStorage(); } catch (err) { console.warn('reload after move', err); }
+  try { await loadScheduledQuestions(); } catch (_) {}
+  try { renderQuestionBank(); } catch (_) {}
+  try { renderVettingList(); } catch (_) {}
+
+  _lbBusy = false;    // lbRescan() returns early while this is set
+  await lbRescan();   // whatever failed is still there, and now says so
+  showToast(failed
+    ? `Moved ${moved} question${moved === 1 ? '' : 's'} — ${failed} could not be moved and ${failed === 1 ? 'was' : 'were'} left where ${failed === 1 ? 'it is' : 'they are'}`
+    : `Moved ${moved} question${moved === 1 ? '' : 's'} into the English bank ✓`,
+    failed ? 'error' : 'success');
+}
 
 let _inflightOps = 0;
 let _saveHideTimer = null;
@@ -34012,6 +34325,14 @@ window.showConfirm = showConfirm;
 window.closeConfirm = closeConfirm;
 window.renderBlocks = renderBlocks;
 window.renderQuestionBank = renderQuestionBank;
+// One-time rescue of the questions this app wrote into the Science bank before
+// v1.3.0 — see LEGACY BANK RESCUE.
+window.lbOpen = lbOpen;
+window.lbClose = lbClose;
+window.lbRescan = lbRescan;
+window.lbToggle = lbToggle;
+window.lbToggleAll = lbToggleAll;
+window.lbMove = lbMove;
 window.setBankView = setBankView;
 window.toggleBankTopicMenu = toggleBankTopicMenu;
 window.toggleBankTopic = toggleBankTopic;

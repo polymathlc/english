@@ -6651,6 +6651,11 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
                whole backlog can be done in one go. -->
           <button class="btn btn-outline admin-only" onclick="openBulkTags()"
             title="Tag many questions at once — add or remove the same tags across everything shown, or have the AI tag each one from the vocabulary you've already built">🏷 Bulk tag</button>
+          <!-- One-time: the questions this app saved into the Science bank before
+               v1.3.0, when the two shared one. Quiet on purpose — it does nothing
+               once the Science bank holds no English questions. -->
+          <button class="btn btn-outline admin-only" onclick="lbOpen()"
+            title="Move questions this app saved into the Science portal's bank before v1.3.0 back into the English bank">📦 From Science bank</button>
           <div class="view-toggle" id="bankViewToggle" role="group" aria-label="Question bank view">
             <button type="button" data-bank-view="list" onclick="setBankView('list')" title="List view — full titles, tags and actions">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
@@ -7953,6 +7958,26 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
 <!-- ==================== BULK TAGGING (Admin) ====================
      Works on a set — the questions picked in the grid, or everything the current
      filters show. Body is rendered by renderBulkTags(). -->
+<!-- ==================== MOVE QUESTIONS OUT OF THE SCIENCE BANK (Admin, one-time) ====================
+     Until v1.3.0 this app's four bank-path helpers spelled the Science app's
+     collection names inline, so every English question it saved went into the
+     Science bank. The code now uses its own collections; this moves across what
+     was written to the wrong one. Copy → read back → delete, so a question is
+     never removed on the strength of a write having merely been issued. -->
+<div class="confirm-overlay" id="legacyBankOverlay">
+  <div class="confirm-dialog" style="max-width:720px;text-align:left;max-height:90vh;overflow-y:auto;">
+    <h3 style="margin-bottom:6px;">📦 Move questions out of the Science bank</h3>
+    <p style="color:var(--text-muted);font-size:0.85rem;line-height:1.7;margin-bottom:22px;">
+      Until v1.3.0 this app saved into the Science portal's question bank instead of its own, so the two
+      shared one bank. They are separate now — this brings the English questions across, and takes them
+      out of the Science app at the same time. Each one is copied first and only removed once the copy
+      has been read back, so nothing is lost if it stops half way. Safe to run more than once.
+    </p>
+    <div id="lbBody"></div>
+    <div class="btn-group" id="lbFoot" style="justify-content:flex-end;align-items:center;margin-top:22px;"></div>
+  </div>
+</div>
+
 <div class="confirm-overlay" id="bulkTagOverlay">
   <div class="confirm-dialog" style="max-width:660px;text-align:left;max-height:90vh;overflow-y:auto;">
     <h3 style="margin-bottom:4px;">🏷 Bulk tag questions</h3>

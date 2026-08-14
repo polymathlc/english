@@ -64,6 +64,12 @@ statements into the project's existing rules **alongside** the Science app's, in
 the same `service cloud.firestore` block. Do not replace that file with this one:
 that would lock the Science app out of its own data.
 
+**Upgrading to v1.3.0 needs the rules deployed again.** Three collections were
+renamed to stop the Science app sharing them — `mistakesEn`, `flashcardsEn` and
+`scheduledQuestionsEn`. All three are written fire-and-forget, so if the rules
+still name only the old ones the writes are denied with nothing shown on screen:
+the mistake log simply stops filling. Redeploy first, then the app.
+
 ### 2. Point the bank at yourself
 
 Sign in as the teacher account, then write the pointer every student resolves

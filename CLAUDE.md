@@ -31,6 +31,36 @@ is built from those constants (`QUESTIONS_COL`, `SETTINGS_COL`, `PROFILES_COL`,
 `PROGRESS_COL`, …). Nothing else in the file spells a collection name out — keep
 it that way.
 
+**That rule is not style, and v1.3.0 is what it costs to break it.** Four
+functions are the only door to the bank — `_qRef` / `_vRef` / `_qCol` / `_vCol`
+— and they spelled `'questions'` and `'vetting'` inline: the Science app's own
+names, under the same `users/{uid}` tree, in the same project. So for three
+versions the two apps were *one bank wearing two front ends*. Every English
+question this app saved landed in the Science bank and every Science question
+came back out of it. Nothing threw. Nothing looked broken. The only symptom was
+Science questions listed on the English bank page, which reads as a filter bug.
+Three things follow:
+
+- **A shared-name path fails LOUDLY nowhere and quietly everywhere.** The
+  fail-closed warning below is about names the rules *don't* know; this is the
+  opposite and worse — a name the rules know for the *other app*, which works
+  perfectly and silently merges two data sets.
+- **`mistakes`, `flashcards` and `scheduledQuestions` had the same bug** and
+  are now `mistakesEn` / `flashcardsEn` / `scheduledQuestionsEn`. The comment
+  above them used to say they were "shared with no one"; they were shared with
+  the Science app, which writes exactly those three names under the same user.
+  `scheduledQuestions` was the dangerous one: a question the SCIENCE app had
+  queued would have been released into the ENGLISH bank on its release date,
+  re-linking the two a day after they were separated.
+- **The one-time rescue is `_lb*`** (📦 From Science bank, on the Question Bank
+  page, admin only). It moves what was written to the wrong collection back
+  across, deciding subject by TOPIC — the two topic lists share no entry and a
+  topic comes off a `<select>`, so it is a strong signal, and anything neither
+  list knows is listed UNTICKED for the admin to decide rather than guessed at.
+  It copies, **reads the copy back**, and only then deletes the original; a copy
+  that cannot be verified leaves the original where it is. Delete the tool once
+  the banks have been apart long enough that nobody is upgrading across it.
+
 **A name the Firestore rules do not know about fails closed**: reads come back
 empty, writes are denied, and nothing on screen explains why. So a new
 collection means a matching block in `firestore.rules`, deployed alongside the
@@ -471,12 +501,17 @@ reported in chat, to know whether the deploy actually went through.
   named constant used at every call site rather than a string typed out in three
   places, and swapping the model means checking its scale first. The Science app
   (`polymathlc/cer`) carries the same pair — keep the two in step.
-- Run the four harnesses after touching what they cover — every failure they
+- Run the five harnesses after touching what they cover — every failure they
   catch is **silent**, with nothing thrown and nothing wrong on screen:
   - `node tools/answer-key-tests.mjs`
   - `node tools/check-questions-tests.mjs`
   - `node tools/objective-tag-tests.mjs`
   - `node tools/learning-gap-tests.mjs`
+  - `node tools/bank-rescue-tests.mjs` — the one-time rescue's topic verdicts.
+    Wrong in one direction it leaves an author's questions in the other app and
+    reports nothing to move; wrong in the other it offers a one-click **delete
+    from the Science bank**. It also pins the premise the whole heuristic rests
+    on: that the two subjects' topic lists share no entry.
 
 ### Two CSS traps in `index.html`
 
