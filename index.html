@@ -6514,6 +6514,15 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
       <div class="nav-item" data-page="community" onclick="navigateTo('community')">
         <span class="ico">🏛️</span> Community
       </div>
+      <!-- 🐒 Journey to the West — the roguelite in journey/, with the
+           between-rounds question gate. It is a page of its own, not one of
+           this app's, so it is a plain link with NO data-page: navigateTo
+           knows nothing about it, an employee's default-deny sweep hides it
+           (its dataset.page is '', which is on no EMPLOYEE_PAGES list) and
+           the bookmark stars, which query .nav-item[data-page], skip it. -->
+      <a class="nav-item" href="journey/index.html" target="_blank" rel="noopener" title="Journey to the West — a Wukong action roguelite. Every chamber you clear asks three short English questions before it hands over the reward: each one right heals 10 health and makes the reward one rank better.">
+        <span class="ico">🐒</span> Journey to the West
+      </a>
       <!-- Admin-only nav items -->
       <div class="nav-section-label admin-only">Build</div>
       <div class="nav-item admin-only" data-page="create" onclick="navigateTo('create')">
