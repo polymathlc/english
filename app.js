@@ -2374,7 +2374,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.45.0';
+const APP_VERSION = 'v1.46.0';
 
 // =====================================================================
 // THE SUBJECT SWITCHER — one student, four subjects (v2.6.0)
@@ -2414,6 +2414,29 @@ const SUBJECT_APPS = [
   { key: 'chinese', ico: '📗', label: 'Chinese', sub: '华文 · Chinese Portal',     url: '../chinese/' },
   { key: 'science', ico: '🔬', label: 'Science', sub: 'Science Learning Portal',  url: '../cer/' }
 ];
+// =====================================================================
+// ALL THE APPS UNDER ONE ROOF
+//
+// The four SUBJECT portals above are one family; the two TOOLS below are the
+// other half of the same centre — 🔑 Ans Key (the teacher's PDF annotator,
+// where a class's worksheets are marked up and shared) and 📖 Study Buddy
+// (where a student writes on a worksheet with Chung GPT hinting, marking and
+// keeping a mistake book). Every Polymath app carries this SAME table, so the
+// menu a student opens reads the same wherever they are standing — that is
+// what "synced" means here: one list, copied byte for byte, never a menu
+// each app writes for itself and lets drift.
+//
+// The rules are the subject table's: RELATIVE urls (sibling folders on one
+// GitHub Pages host, and the same on a checkout with the repos side by side),
+// the repo name as the folder, and never a host baked into the page. `here`
+// is never true for a tool in this app — this app is a subject — but the
+// shared renderer in Ans Key and Study Buddy marks its own row with it.
+const POLYMATH_TOOLS = [
+  { key: 'anskey', ico: '🔑', label: 'Ans Key',     sub: 'Mark up & share PDF worksheets',        url: '../anskey/', page: 'anskey' },
+  { key: 'tutor',  ico: '📖', label: 'Study Buddy', sub: 'Hints, marking & a mistake book',       url: '../tutor/',  page: 'tutor' }
+];
+function polymathToolFor(key) { return POLYMATH_TOOLS.find(t => t.key === key) || null; }
+
 
 function subjectCurrent() {
   return SUBJECT_APPS.find(s => s.key === SUBJECT_KEY) || SUBJECT_APPS[0];
@@ -2439,10 +2462,35 @@ function subjectRenderMenu() {
       ? `<div class="subject-opt here" role="menuitem" aria-current="page">${body}</div>`
       : `<a class="subject-opt" role="menuitem" href="${escapeHtml(s.url)}">${body}</a>`;
   }).join('');
+  // The tools sit under the subjects, in the SAME menu: one roof, one list.
+  // A tool that this app can show INSIDE itself (an embedded page, see
+  // `appEmbed*`) is opened there — a student stays in the portal, with the
+  // sidebar and their session around them — and the row's title says the
+  // standalone address is one middle-click away.
+  const tools = POLYMATH_TOOLS.map(t => {
+    const body =
+      `<span class="subject-ico" aria-hidden="true">${t.ico}</span>` +
+      `<span><b>${escapeHtml(t.label)}</b><br><span style="font-size:0.74rem;color:var(--text-muted);">${escapeHtml(t.sub)}</span></span>`;
+    return `<a class="subject-opt" role="menuitem" href="${escapeHtml(t.url)}" data-tool="${escapeHtml(t.key)}" title="Opens inside this portal. Middle-click or ⌘/Ctrl-click for the standalone app.">${body}</a>`;
+  }).join('');
   menu.innerHTML =
     `<div class="subject-menu-title">Your subjects</div>${rows}` +
+    `<div class="subject-menu-title subject-menu-title-tools">Your tools</div>${tools}` +
     `<div class="subject-menu-foot">Each subject keeps its own questions, progress and worksheets. You stay signed in.</div>`;
 }
+// A plain left-click on a tool row opens the tool's embedded page; every
+// other way of following the link (middle-click, ⌘/Ctrl-click, right-click →
+// open in new tab, a keyboard-activated link with a modifier) is left to the
+// browser, because it IS still a link — the standalone app is the href.
+document.addEventListener('click', e => {
+  const a = e.target && e.target.closest ? e.target.closest('.subject-opt[data-tool]') : null;
+  if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const tool = polymathToolFor(a.dataset.tool);
+  if (!tool || !tool.page || !document.getElementById('page-' + tool.page)) return;
+  e.preventDefault();
+  subjectClose();
+  try { navigateTo(tool.page); } catch (err) { console.warn('tool page', err); window.open(tool.url, '_blank', 'noopener'); }
+});
 
 function subjectToggle(e) {
   if (e) e.stopPropagation();
