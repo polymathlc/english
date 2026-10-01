@@ -2,6 +2,24 @@
 
 Guidance for Claude when working in this repo.
 
+## AI defaults (v1.47.0)
+
+Text, vision and thinking default to `gpt-6.1-sol`, through the authenticated
+`askOpenAi` callable in `polymathlc/math/functions`. The automatic provider
+order is OpenAI → Gemini → Kimi. Dedicated speech and image-generation models
+remain specialised. New widget blocks follow the shared engine; explicit
+provider choices on existing blocks stay first and retain automatic backups.
+
+The `sol61` migration lifts previous stored default models once. A saved
+manual model choice and a shared provider choice bearing `aiEngineAt` or
+`aiEngineBy` remain deliberate overrides. Empty replies count as failures.
+The browser OpenAI fallback sends `reasoning_effort` and omits temperature for
+reasoning models. Ordinary calls reserve reasoning headroom; widget calls pass
+`exactOutputBudget` and stay within the shared function's 32,000-token limit.
+
+After editing these routes, run `node tools/ai-routes-tests.mjs` and
+`node --test tools/model-default-tests.mjs`.
+
 ## The app
 
 `index.html` + `app.js` — the **"English Learning Portal"** (the product name in
