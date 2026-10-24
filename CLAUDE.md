@@ -2,6 +2,65 @@
 
 Guidance for Claude when working in this repo.
 
+## 📲 Installable app (Polymath install kit v2.0.0)
+
+Since v1.48.0 the portal installs as an app on PC, Android and iPhone/iPad (a Progressive Web
+App, not a store app). The files:
+
+- `manifest.webmanifest`: `id` / `start_url` / `scope` are `./`, so the same file works at
+  polymathlc.com.sg/english/ and polymathlc.github.io/english/. Its name is "Polymath English",
+  its `short_name` "English" and its `theme_color` `#FFFFFF`. The head tags in `index.html` must
+  agree with it: theme-color, and apple-mobile-web-app-title = `short_name`.
+- `assets/app-icons/`: 192/512 `any`, 192/512 `maskable`, the 180 `apple-touch-icon` and the 32
+  favicon. The kit's `make-icons.mjs` draws them from its app registry (`apps.mjs`, key `english`):
+  "Aa" in `#AD1457` on `#F8BBD0`.
+- **`pwa-install.js` is byte for byte the kit shared with every Polymath app.** polymathlc/cer
+  `student/` and `online/` carry copies, as does every other app. Change it in all of them
+  together, never fork it here. Its `<script defer>` sits at the foot of `index.html`. It must be
+  a classic script, never `type=module`. `?v=` on that tag is the KIT version (2.0.0), not
+  `APP_VERSION`, and the tests check this. `data-app-name`, `-key`, `-icon` and `-accent`
+  describe this app to it.
+- **`sw.js` never caches the app.** It answers only same-origin GET navigations, network first,
+  and shows `offline.html` when the network fails. Scripts, Firebase, Storage, POSTs and other
+  origins get no `respondWith`, so a release reaches students exactly as before.
+  - Every Polymath app shares one origin (polymathlc.com.sg) and so one Cache Storage. That is why
+    the worker uses its own cache prefix, `polymath-english-shell-`, and only ever deletes caches
+    under that prefix. Never reuse cer's `polymath-app-shell-`.
+  - Its `SW_VERSION` is the kit's (2.0.0), not `APP_VERSION`.
+  - Its scope is this folder, so `journey/` page loads fall under it too. That is harmless:
+    network first, and `offline.html` with no connection.
+- `offline.html` is self-contained (no outside files) and names the app.
+
+**The control is 📲 Install app, the last item in the sidebar** (`.nav-item.nav-install`, after
+Settings). It is for EVERY role, so it carries no `admin-only` / `student-only`. It has no
+`data-page` either: it is not a page, so it gets no bookmark star and `navigateTo` never marks it
+active. Three rules keep it working:
+
+- **It starts `data-pwa-hidden`.** The hiding rule is inline in the head, so it is in place before
+  the installer runs. The installer shows the control, and hides it again inside the installed app
+  and inside another page's frame. Any control added later must start hidden too, and the test
+  checks this.
+- **The employee sweep in `configureSidebarForRole` lets it through** (by `data-pwa-install`). It
+  grants no access. If it were hidden, the kit's floating button would come up over Ai-nstein's
+  bubble, which shares the bottom-right corner.
+- **`showPage()` calls `PwaInstall.refresh()`.** The kit shows its floating "Install app" button
+  (`data-floating="auto"`, bottom right, z-index 9990) only on a screen with no control of its
+  own: the home page and sign-in. It re-checks every 4 s. Without the refresh, the floating button
+  sits over Ai-nstein for a few seconds after signing in.
+
+While the floating button is on screen, `.toast-container` is lifted above it
+(`body:has(> .pwa-fab:not([hidden]))`), because "Signed out successfully" lands in that corner.
+
+Pressing the control opens the browser's own install prompt where there is one (Chrome and Edge on
+a computer, Chrome on Android). Everywhere else it shows that browser's steps (iPhone/iPad Share →
+Add to Home Screen, Safari on a Mac File → Add to Dock). Other Android browsers are sent to Chrome.
+CI is `.github/workflows/installable-app.yml`. After touching any of it, run:
+
+- `node --test tools/pwa-install-tests.mjs`
+- `PW=/path/to/playwright/index.mjs node tools/pwa-install-browser.mjs` (add
+  `PWA_SCREENSHOTS=<dir>` to save the pictures). It asks Chrome whether the page is installable,
+  goes offline, and presses the button as a computer and as an iPhone.
+
 ## AI defaults (v1.47.0)
 
 Text, vision and thinking default to `gpt-6.1-sol`, through the authenticated

@@ -1515,6 +1515,12 @@ function showPage(pageId) {
   document.querySelectorAll('.auth-loading').forEach(e => e.classList.remove('active'));
   const fp = document.getElementById('forgotPassInfo');
   if (fp) fp.style.display = 'none';
+  // 📲 The install kit shows its floating "Install app" button only on a screen
+  // with no install control of its own, and looks again every few seconds. The
+  // signed-out screens have none and the app has one in the sidebar, so tell it
+  // the screen changed now: otherwise the floating button sits over Ai-nstein's
+  // bubble for a few seconds after signing in, and is late after signing out.
+  try { if (window.PwaInstall) window.PwaInstall.refresh(); } catch (e) {}
 }
 
 // =====================================================================
@@ -2403,7 +2409,7 @@ async function enterApp(user) {
 
 // App version shown to admins in the sidebar. BUMP THIS on every change you
 // deploy (see CLAUDE.md) so the admin can confirm the latest build is live.
-const APP_VERSION = 'v1.47.0';
+const APP_VERSION = 'v1.48.0';
 
 // =====================================================================
 // THE SUBJECT SWITCHER — one student, four subjects (v2.6.0)
@@ -2703,8 +2709,12 @@ function configureSidebarForRole(role) {
     // EMPLOYEE_PAGES. Adding a nav item elsewhere in the app therefore cannot
     // silently grant an employee access to it.
     studentItems.forEach(el => el.style.display = 'none');
+    // The one exception is 📲 Install app ([data-pwa-install]): it is not a
+    // page and opens nothing, so it grants no access — and hiding it would only
+    // bring the install kit's floating button up over Ai-nstein's bubble.
     document.querySelectorAll('.nav-item').forEach(el => {
-      el.style.display = EMPLOYEE_PAGES.indexOf(el.dataset.page || '') >= 0 ? '' : 'none';
+      const allowed = EMPLOYEE_PAGES.indexOf(el.dataset.page || '') >= 0 || el.hasAttribute('data-pwa-install');
+      el.style.display = allowed ? '' : 'none';
     });
     // The section headings ("Build", "Manage", …) are flat siblings of the
     // items, not wrappers, so there is no way to tell which survive. With five
