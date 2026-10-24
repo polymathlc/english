@@ -4,6 +4,11 @@ Guidance for Claude when working in this repo.
 
 ## 📲 Installable app (Polymath install kit v2.0.0)
 
+- **The offline page carries its icon inline (sw 2.0.1, kit v2.0.1).** `sw.js` answers page loads only, so an
+  icon file beside `offline.html` could never arrive with no connection (it showed as a broken picture).
+  The icon is a `data:` URI inside `offline.html`, `PRECACHE` is just the offline page, and `SW_VERSION`
+  went to 2.0.1 so installed copies re-cache it. The browser harness now checks the icon shows offline.
+
 Since v1.48.0 the portal installs as an app on PC, Android and iPhone/iPad (a Progressive Web
 App, not a store app). The files:
 
@@ -26,7 +31,7 @@ App, not a store app). The files:
   - Every Polymath app shares one origin (polymathlc.com.sg) and so one Cache Storage. That is why
     the worker uses its own cache prefix, `polymath-english-shell-`, and only ever deletes caches
     under that prefix. Never reuse cer's `polymath-app-shell-`.
-  - Its `SW_VERSION` is the kit's (2.0.0), not `APP_VERSION`.
+  - Its `SW_VERSION` is the kit's (2.0.1), not `APP_VERSION`.
   - Its scope is this folder, so `journey/` page loads fall under it too. That is harmless:
     network first, and `offline.html` with no connection.
 - `offline.html` is self-contained (no outside files) and names the app.
