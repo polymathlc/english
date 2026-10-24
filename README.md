@@ -119,6 +119,10 @@ cp app.js /tmp/c.mjs && node --check /tmp/c.mjs
 node tools/answer-key-tests.mjs        # a key that drops a question prints fine
 node tools/check-questions-tests.mjs   # a bad auto-fix destroys a question
 node tools/objective-tag-tests.mjs     # a lost tag throws nothing
+
+# 📲 the installable app (manifest, icons, sw.js, the sidebar's Install app)
+node --test tools/pwa-install-tests.mjs
+PW=/path/to/playwright/index.mjs node tools/pwa-install-browser.mjs
 ```
 
 **Bump `APP_VERSION` in `app.js` on every change.** It renders in the sidebar

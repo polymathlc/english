@@ -4,6 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>English Learning Portal — Polymath Learning Centre</title>
+<!-- 📲 Installable app (Polymath install kit v2.0.0): manifest + icons make "Install" / "Add to Home Screen"
+     work on PC, Android and iPhone/iPad. pwa-install.js registers sw.js and drives every [data-pwa-install] control.
+     See CLAUDE.md → "Installable app". -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#FFFFFF">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/app-icons/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/app-icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="English">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<style>[data-pwa-install][data-pwa-hidden]{display:none!important}</style>
 <link rel="preconnect" href="https://dl.dropboxusercontent.com" crossorigin>
 <link rel="dns-prefetch" href="https://dl.dropboxusercontent.com">
 <link rel="preconnect" href="https://drive.google.com" crossorigin>
@@ -2372,6 +2384,10 @@ option {
   align-items: center;
   gap: 8px;
 }
+/* 📲 The install kit's floating "Install app" button (.pwa-fab, bottom right, z-index 9990) shows
+   on the signed-out screens — exactly where toasts stack, and "Signed out successfully" lands the
+   moment it reappears. While it is on screen the toasts stack ABOVE it instead of under it. */
+body:has(> .pwa-fab:not([hidden])) .toast-container { bottom: 76px; }
 .toast.success { background: var(--primary); }
 .toast.error { background: var(--accent-red); }
 .toast.info { background: var(--accent-blue); }
@@ -6799,6 +6815,15 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
       </div>
+      <!-- 📲 Install app (pwa-install.js, Polymath install kit): the browser's own install prompt, or
+           step-by-step help on iPhone / iPad / Safari. For EVERY role, so it is neither admin-only nor
+           student-only, and it has no data-page (it is not a page: no bookmark star, navigateTo never
+           marks it active, and the employee sweep in configureSidebarForRole lets it through by its
+           data-pwa-install). Starts hidden; the installer shows it, and hides it inside the installed app. -->
+      <div class="nav-item nav-install" data-pwa-install data-pwa-hidden role="button" tabindex="0" title="Install Polymath English as an app on this computer, phone or tablet — its own icon and window, no app store needed">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v7"/><path d="M9 11l3 3 3-3"/><path d="M10 18h4"/></svg>
+        Install app
+      </div>
     </nav>
     <div id="saveStatusIndicator" style="display:none;width:100%;text-align:center;font-size:0.7rem;padding:4px 12px;border-radius:6px;margin:0 8px 6px;font-family:'Space Mono',monospace;letter-spacing:0.03em;"></div>
     <div class="sidebar-footer">
@@ -10215,5 +10240,9 @@ body.wk-clocked-in .page-body { padding-bottom: 104px; }
      before the page can paint, and the browser fetches and compiles it in
      parallel with the markup instead of afterwards. -->
 <script type="module" src="app.js"></script>
+<!-- 📲 The install kit (classic + defer, never a module): registers sw.js and drives the sidebar's
+     📲 Install app. The signed-out screens (home page, sign-in) have no control of their own, so
+     data-floating="auto" gives them the small floating button instead. ?v= is the KIT version. -->
+<script defer src="pwa-install.js?v=2.0.0" data-app-name="Polymath English" data-app-key="english" data-app-icon="assets/app-icons/icon-192.png" data-accent="#AD1457" data-sw="sw.js" data-floating="auto"></script>
 </body>
 </html>
